@@ -95,6 +95,7 @@ static td_void save_rgb(const char *filename, ot_svp_img *img) {
         return;
     }
 
+
     td_s32 size = img->width * img->height * 3;
     fwrite((void*)img->virt_addr[0], 1, size, fp);
 
@@ -499,6 +500,68 @@ td_s32 frame_YUV420SP2RGB(ot_svp_img* srcYUV, ot_svp_img* dstRGB) {
     return TD_SUCCESS;
 }
 
+td_s32 frame_resize(ot_svp_img* srcRGB, ot_svp_img* dstRGB) {
+    td_s32 ret;
+    ot_ive_handle handle;
+    ot_ive_resize_ctrl resize_ctrl;
+
+    printf("srcRGB: w=%d, h=%d, stride[0]=%d, stride[1]=%d, stride[2]=%d\n",
+           srcRGB->width, srcRGB->height, srcRGB->stride[0], srcRGB->stride[1], srcRGB->stride[2]);
+    printf("dstRGB: w=%d, h=%d, stride[0]=%d, stride[1]=%d, stride[2]=%d\n",
+           dstRGB->width, dstRGB->height, dstRGB->stride[0], dstRGB->stride[1], dstRGB->stride[2]);
+    printf("srcRGB type: %d, dstRGB type: %d\n", srcRGB->type, dstRGB->type);
+
+
+    // image arrays
+    ot_svp_img src_array[1] = {*srcRGB};
+    ot_svp_img dst_array[1] = {*dstRGB};
+
+    // set up resize control parameters
+    resize_ctrl.mode = OT_IVE_RESIZE_MODE_LINEAR; // bilinear interpolation
+    resize_ctrl.num = 1; // processing a single image
+
+    // allocate exxtra memory required
+    td_u32 U8C1_NUM = 0; // since we're dealing with U8C3_PLANAR
+    td_u32 mem_size = 25 * U8C1_NUM + 49 * (resize_ctrl.num - U8C1_NUM);
+    printf("required mem size: %lu\n", mem_size);
+    // td_u32 mem_size = 10000;
+    memset(&resize_ctrl.mem, 0, sizeof(resize_ctrl.mem)); //  zero out
+    printf("(before)resize_ctrl.mem allocation, phys_addr: %lx, virt_addr: %p, size: %lu\n", 
+           resize_ctrl.mem.phys_addr, (void*)resize_ctrl.mem.virt_addr, resize_ctrl.mem.size);
+    td_s32 ret_mem = ss_mpi_sys_mmz_alloc(&resize_ctrl.mem.phys_addr, (td_void**)&resize_ctrl.mem.virt_addr,
+                                          "resize_mem", TD_NULL, mem_size);
+    resize_ctrl.mem.size = mem_size;
+    if (ret_mem != TD_SUCCESS) {
+        printf("Errror: failed to allocate memory for resize_ctrl.mem!\n");
+        return TD_FAILURE;
+    }
+    printf("resize_ctrl.mem allocation, phys_addr: %lx, virt_addr: %p, size: %lu\n", 
+           resize_ctrl.mem.phys_addr, (void*)resize_ctrl.mem.virt_addr, resize_ctrl.mem.size);
+
+
+    // performing resizing
+    ret = ss_mpi_ive_resize(&handle, src_array, dst_array, &resize_ctrl, TD_TRUE);
+    if (ret != TD_SUCCESS) {
+        printf("Error: RGB resize failed!\n");
+        printf("error code: 0x%08X\n", ret);
+        ss_mpi_sys_mmz_free(resize_ctrl.mem.phys_addr, resize_ctrl.mem.virt_addr);
+        return ret;
+    }
+
+    // Query to check if the resizing is finished
+    td_bool is_finish = TD_FALSE;
+    td_bool is_block = TD_TRUE;
+    ret = ss_mpi_ive_query(handle, &is_finish, is_block);
+    while (ret == OT_ERR_IVE_QUERY_TIMEOUT) {
+        usleep(100);
+        ret = ss_mpi_ive_query(handle, &is_finish, is_block);
+    }
+    // free the allocated memory
+    ss_mpi_sys_mmz_free(resize_ctrl.mem.phys_addr, resize_ctrl.mem.virt_addr);
+
+    return TD_SUCCESS;
+}
+
 
 
 
@@ -677,7 +740,7 @@ void* sample_nnnn_proc(void* parg) {
     ot_svp_img imgAlgo;
     // CreateUsrFrame(&imgAlgo, 640, 640);
     // CreateUsrFrame(&imgAlgo, 320, 320);
-    ot_vb_blk vb_blk_algo = CreateYUV420SPFrame(&imgAlgo, 640, 640); // for model input
+    ot_vb_blk vb_blk_algo = CreateRGBFrame(&imgAlgo, 128, 128); // for model input
     printf("640 resolution\n");
 
     int fps = 0;
@@ -695,7 +758,7 @@ void* sample_nnnn_proc(void* parg) {
         long start = getms();
         // framecpy(&imgAlgo, &frame_info);
 
-        // ==================crop image====================
+        // ==================crop====================
         // allocate cropImage(YUV420SP)
         td_s32 crop_x = 640;
         td_s32 crop_y = 640;
@@ -707,14 +770,19 @@ void* sample_nnnn_proc(void* parg) {
         printf("cropp done\n");
         
 
-        // ==================convert image====================
+        // ==================color conversion====================
         ot_svp_img imgRGB;
         ot_vb_blk vb_blk_rgb = CreateRGBFrame(&imgRGB, imgCrop.width, imgCrop.height); 
         frame_YUV420SP2RGB(&imgCrop, &imgRGB);
         printf("color conversion done\n");
 
+        //===================resize=====================
+        frame_resize(&imgRGB, &imgAlgo);
+        printf("resizing done\n");
+
         save_yuv420sp("crop_output.yuv", &imgCrop); 
         save_rgb("crop_output.rgb", &imgRGB);
+        save_rgb("resize_output.rgb", &imgAlgo);
 
 
         // nnn_execute((td_void*)imgAlgo.virt_addr[0], framelen, pOut);
