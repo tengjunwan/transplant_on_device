@@ -39,7 +39,7 @@ static volatile sig_atomic_t g_sig_flag = 0;
 #define VB_DOUBLE_YUV_CNT   15
 #define VB_MULTI_YUV_CNT    30
 
-ot_vb_blk vb_blk;
+// ot_vb_blk vb_blk;
 pthread_t nnn_pid;
 pthread_t vodrawrc_pid;
 static int nnn_thd_run = 0;
@@ -68,6 +68,38 @@ static td_void sample_get_char(td_void) {
         return;
     }
     sample_pause();
+}
+
+static td_void save_yuv420sp(const char *filename, ot_svp_img *img) {
+    FILE *fp = fopen(filename, "wb");
+    if (!fp) {
+        printf("failed to open file %s\n", filename);
+        return;
+    }
+
+    // write Y plane (640 * 640)
+    fwrite((void*)img->virt_addr[0], 1, img->width * img->height, fp);
+
+    // write UV plane (320 * 320)
+    fwrite((void*)img->virt_addr[1], 1, (img->width * img->height) / 2, fp);
+
+    fclose(fp);
+    printf("save YUV image to %s\n", filename);
+}
+
+
+static td_void save_rgb(const char *filename, ot_svp_img *img) {
+    FILE *fp = fopen(filename, "wb");
+    if (!fp) {
+        printf("failed to open file %s\n", filename);
+        return;
+    }
+
+    td_s32 size = img->width * img->height * 3;
+    fwrite((void*)img->virt_addr[0], 1, size, fp);
+
+    fclose(fp);
+    printf("save RGB image to %s\n", filename);
 }
 
 static td_void sample_vi_get_default_vb_config(ot_size* size, ot_vb_cfg* vb_cfg, ot_vi_video_mode video_mode,
@@ -139,8 +171,10 @@ static td_s32 sample_vio_start_vpss(ot_vpss_grp grp, ot_size* in_size) {
     ot_vpss_chn_attr chn_attrex[2];
     memcpy(&chn_attrex[0], &chn_attr, sizeof(chn_attr));
     memcpy(&chn_attrex[1], &chn_attr, sizeof(chn_attr));
-    chn_attrex[1].width = 640;
-    chn_attrex[1].height = 640;
+    // chn_attrex[1].width = 640;
+    // chn_attrex[1].height = 640;
+    chn_attrex[1].width = 1280;
+    chn_attrex[1].height = 1280;
     chn_attrex[1].compress_mode = OT_COMPRESS_MODE_NONE;
     chn_attrex[1].depth = 1;
 
@@ -365,20 +399,210 @@ static td_s32 framecpy(ot_svp_dst_img* dstf,
     return TD_SUCCESS;
 }
 
-td_s32 CreateUsrFrame(ot_svp_img* imgAlgo, int w, int h) {
-    int vbsize = w * h * 3 / 2;
-    vb_blk = ss_mpi_vb_get_blk(OT_VB_INVALID_POOL_ID, vbsize, TD_NULL);
-    imgAlgo->phys_addr[0] = ss_mpi_vb_handle_to_phys_addr(vb_blk);
-    imgAlgo->phys_addr[1] = imgAlgo->phys_addr[0] + w * h;
-    imgAlgo->virt_addr[0] = (td_u64)(td_u8*)ss_mpi_sys_mmap(
-        imgAlgo->phys_addr[0], vbsize);
-    imgAlgo->virt_addr[1] = imgAlgo->virt_addr[0] + w * h;
-    imgAlgo->stride[0] = w;
-    imgAlgo->stride[1] = w;
-    imgAlgo->width = w;
-    imgAlgo->height = h;
-    imgAlgo->type = OT_SVP_IMG_TYPE_YUV420SP;
-    return 0;
+
+static td_s32 frame_crop(ot_svp_dst_img* dstf, ot_video_frame_info* srcf, 
+    td_s32 x_crop, td_s32 y_crop) {
+    
+    td_s32 ret = OT_ERR_IVE_NULL_PTR;
+    ot_ive_handle handle;
+    ot_svp_dst_data dst_data;
+    ot_svp_src_data src_data;
+    td_bool is_finish = TD_FALSE;
+    td_bool is_block = TD_TRUE;
+    // ot_ive_dma_ctrl ctrl = { OT_IVE_DMA_MODE_INTERVAL_COPY, 0, 0, 0, 0}; // enables resizing
+    ot_ive_dma_ctrl ctrl = { OT_IVE_DMA_MODE_DIRECT_COPY, 0, 0, 0, 0}; 
+
+    // adjust crop parameters to be even
+    x_crop &= ~1;
+    y_crop &= ~1;
+    td_s32 w_crop = dstf->width;
+    td_s32 h_crop = dstf->height;
+    // printf("crop params: x=%d, y=%d, w=%d, h=%d\n", x_crop, y_crop, w_crop, h_crop);
+    // printf("srcf->video_frame.stride[0] = %d\n", srcf->video_frame.stride[0]);
+    // printf("srcf->video_frame.stride[1] = %d\n", srcf->video_frame.stride[1]);
+    // printf("srcf->video_frame.width = %d\n", srcf->video_frame.width);
+    // printf("srcf->video_frame.height = %d\n", srcf->video_frame.height);
+    // printf("dstf->stride[0] = %d\n", dstf->stride[0]);
+    // printf("dstf->stride[1] = %d\n", dstf->stride[1]);
+    // printf("dstf->width = %d\n", dstf->width);
+    // printf("dstf->height = %d\n", dstf->height);
+
+    // copy & resize Y plane
+    src_data.phys_addr = srcf->video_frame.phys_addr[0] + y_crop * srcf->video_frame.stride[0] + x_crop;
+    src_data.width = w_crop;
+    src_data.height = h_crop;
+    src_data.stride = srcf->video_frame.stride[0];
+
+    dst_data.phys_addr = dstf->phys_addr[0];
+    dst_data.width = dstf->width;
+    dst_data.height = dstf->height;
+    dst_data.stride = dstf->stride[0];
+    
+
+    ret = ss_mpi_ive_dma(&handle, &src_data, &dst_data, &ctrl, TD_TRUE);
+    if (ret != TD_SUCCESS) return -1;
+
+    ret = ss_mpi_ive_query(handle, &is_finish, is_block);
+    while (ret == OT_ERR_IVE_QUERY_TIMEOUT) {
+        usleep(100);
+        ret = ss_mpi_ive_query(handle, &is_finish, is_block);
+    }
+
+    // copy & resize UV plane
+    src_data.phys_addr = srcf->video_frame.phys_addr[1] + (y_crop / 2) * srcf->video_frame.stride[0] + x_crop;
+    src_data.width = w_crop;
+    src_data.height = h_crop / 2;
+    src_data.stride = srcf->video_frame.stride[0];
+
+    dst_data.phys_addr = dstf->phys_addr[1];
+    dst_data.width = dstf->width;
+    dst_data.height = dstf->height / 2;
+    dst_data.stride = dstf->stride[0];
+
+    ret = ss_mpi_ive_dma(&handle, &src_data, &dst_data, &ctrl, TD_TRUE);
+    if (ret != TD_SUCCESS) return -1;
+
+    ret = ss_mpi_ive_query(handle, &is_finish, is_block);
+    while (ret == OT_ERR_IVE_QUERY_TIMEOUT) {
+        usleep(100);
+        ret = ss_mpi_ive_query(handle, &is_finish, is_block);
+    }
+
+    return TD_SUCCESS;
+}
+
+
+td_s32 frame_YUV420SP2RGB(ot_svp_img* srcYUV, ot_svp_img* dstRGB) {
+    td_s32 ret;
+    ot_ive_handle handle;
+    ot_ive_csc_ctrl csc_ctrl;
+
+    // set color conversion mode: YUV420SP -> RGB
+    csc_ctrl.mode = OT_IVE_CSC_MODE_PIC_BT709_YUV_TO_RGB;
+
+    ret = ss_mpi_ive_csc(&handle, (const ot_svp_src_img*)srcYUV, (const ot_svp_dst_img*)dstRGB, 
+                          (const ot_ive_csc_ctrl*)&csc_ctrl, TD_TRUE);
+    if (ret != TD_SUCCESS) {
+        printf("Error: YUV420SP to RGB conversion failed!\n");
+        return ret;
+    }
+
+    // wait for the operation to complete
+    td_bool is_finish = TD_FALSE;
+    td_bool is_block = TD_TRUE;
+    ret = ss_mpi_ive_query(handle, &is_finish, is_block);
+    while (ret == OT_ERR_IVE_QUERY_TIMEOUT) {
+        usleep(100);
+        ret  = ss_mpi_ive_query(handle, &is_finish, is_block);
+    }
+
+    return TD_SUCCESS;
+}
+
+
+
+
+// td_s32 CreateUsrFrame(ot_svp_img* imgAlgo, int w, int h) {
+//     int vbsize = w * h * 3 / 2;
+//     vb_blk = ss_mpi_vb_get_blk(OT_VB_INVALID_POOL_ID, vbsize, TD_NULL);
+//     imgAlgo->phys_addr[0] = ss_mpi_vb_handle_to_phys_addr(vb_blk);
+//     imgAlgo->phys_addr[1] = imgAlgo->phys_addr[0] + w * h;
+//     imgAlgo->virt_addr[0] = (td_u64)(td_u8*)ss_mpi_sys_mmap(
+//         imgAlgo->phys_addr[0], vbsize);
+//     imgAlgo->virt_addr[1] = imgAlgo->virt_addr[0] + w * h;
+//     imgAlgo->stride[0] = w;
+//     imgAlgo->stride[1] = w;
+//     imgAlgo->width = w;
+//     imgAlgo->height = h;
+//     imgAlgo->type = OT_SVP_IMG_TYPE_YUV420SP;
+//     return 0;
+// }
+
+ot_vb_blk CreateYUV420SPFrame(ot_svp_img* img, td_s32 w, td_s32 h) {
+    w &= ~1; // make w even
+    h &= ~1; // make h even
+
+    // calculate required memory size for YUV420SP
+    td_s32 vbsize = w * h * 3 / 2;
+
+    // allocate memory using Video Buffer Block(VB)
+    ot_vb_blk vb_blk = ss_mpi_vb_get_blk(OT_VB_INVALID_POOL_ID, vbsize, TD_NULL);
+    if (vb_blk == OT_VB_INVALID_HANDLE) {
+        printf("Error: Failed to allcoate VB block for YUV420SP!\n");
+        return OT_VB_INVALID_HANDLE;
+    }
+
+    img->phys_addr[0] = ss_mpi_vb_handle_to_phys_addr(vb_blk);
+    if (img->phys_addr[0] == 0) {
+        printf("Error: Failed to get physical address for YUV420SP!\n");
+        ss_mpi_vb_release_blk(vb_blk);
+        return OT_VB_INVALID_HANDLE;
+    }
+    img->phys_addr[1] = img->phys_addr[0] + w * h;
+    img->virt_addr[0] = (td_u64)(td_u8*)ss_mpi_sys_mmap(
+        img->phys_addr[0], vbsize);
+    if (img->virt_addr[0] == 0) {
+        printf("Error: Failed to get virtual address for YUV420SP!\n");
+        ss_mpi_vb_release_blk(vb_blk);
+        return OT_VB_INVALID_HANDLE;
+    }
+    img->virt_addr[1] = img->virt_addr[0] + w * h;
+    img->stride[0] = w;
+    img->stride[1] = w;
+    img->width = w;
+    img->height = h;
+    img->type = OT_SVP_IMG_TYPE_YUV420SP;
+
+    printf("YUV frame: w=%d, h=%d, stride[0]=%d, stride[1]=%d\n", img->width, img->height, img->stride[0], img->stride[1]);
+
+    return vb_blk; // return allocated block
+}
+
+
+ot_vb_blk CreateRGBFrame(ot_svp_img* img, td_s32 w, td_s32 h) {
+    w &= ~1; // make w even
+    h &= ~1; // make h even
+
+    // calculate required memory size for RGB
+    td_s32 vbsize = w * h * 3;
+
+    // allocate memory using Video Buffer Block(VB)
+    ot_vb_blk vb_blk = ss_mpi_vb_get_blk(OT_VB_INVALID_POOL_ID, vbsize, TD_NULL);
+    if (vb_blk == OT_VB_INVALID_HANDLE) {
+        printf("Error: Failed to allcoate VB block! for RGB frame\n");
+        return OT_VB_INVALID_HANDLE;
+    }
+
+    img->phys_addr[0] = ss_mpi_vb_handle_to_phys_addr(vb_blk); // B plane
+    img->phys_addr[1] = img->phys_addr[0] + w * h; // G plane
+    img->phys_addr[2] = img->phys_addr[1] + w * h; // R plane
+    if (img->phys_addr[0] == 0) {
+        printf("Error: Failed to get physical address! for RGB frame\n");
+        ss_mpi_vb_release_blk(vb_blk);
+        return OT_VB_INVALID_HANDLE;
+    }
+
+    
+    img->virt_addr[0] = (td_u64)(td_u8*)ss_mpi_sys_mmap(img->phys_addr[0], vbsize);
+    img->virt_addr[1] = img->virt_addr[0] + w * h; // G plane
+    img->virt_addr[2] = img->virt_addr[1] + w * h; // R plane
+    if (img->virt_addr[0] == 0) {
+        printf("Error: Failed to get virtual address! for RGB frame\n");
+        ss_mpi_vb_release_blk(vb_blk);
+        return OT_VB_INVALID_HANDLE;
+    }
+
+    img->stride[0] = w;
+    img->stride[1] = w;
+    img->stride[2] = w;
+    img->width = w;
+    img->height = h;
+    img->type = OT_SVP_IMG_TYPE_U8C3_PLANAR;
+
+    printf("RGB frame: w=%d, h=%d, stride[0]=%d, stride[1]=%d, stride[2]=%d\n", 
+            img->width, img->height, img->stride[0], img->stride[1], img->stride[2]);
+
+    return vb_blk; // return allocated block
 }
 
 void* sample_drawrec_proc(void* parg) {
@@ -451,7 +675,10 @@ void* sample_nnnn_proc(void* parg) {
 
     stYolovDetectObjs* pOut = (stYolovDetectObjs*)malloc(sizeof(stYolovDetectObjs));
     ot_svp_img imgAlgo;
-    CreateUsrFrame(&imgAlgo, 640, 640);
+    // CreateUsrFrame(&imgAlgo, 640, 640);
+    // CreateUsrFrame(&imgAlgo, 320, 320);
+    ot_vb_blk vb_blk_algo = CreateYUV420SPFrame(&imgAlgo, 640, 640); // for model input
+    printf("640 resolution\n");
 
     int fps = 0;
     long prems = getms();
@@ -461,18 +688,50 @@ void* sample_nnnn_proc(void* parg) {
         if (ret != TD_SUCCESS) {
             continue;
         }
-
+        
         int w = imgAlgo.width;
         int h = imgAlgo.height;
         int framelen = w * h * 3 / 2;
         long start = getms();
-        framecpy(&imgAlgo, &frame_info);
-        nnn_execute((td_void*)imgAlgo.virt_addr[0], framelen, pOut);
+        // framecpy(&imgAlgo, &frame_info);
+
+        // ==================crop image====================
+        // allocate cropImage(YUV420SP)
+        td_s32 crop_x = 640;
+        td_s32 crop_y = 640;
+        td_s32 crop_w = 640;
+        td_s32 crop_h = 640;
+        ot_svp_img imgCrop;
+        ot_vb_blk vb_blk_crop = CreateYUV420SPFrame(&imgCrop, crop_w, crop_h); // for crop
+        frame_crop(&imgCrop, &frame_info, crop_x, crop_y);
+        printf("cropp done\n");
+        
+
+        // ==================convert image====================
+        ot_svp_img imgRGB;
+        ot_vb_blk vb_blk_rgb = CreateRGBFrame(&imgRGB, imgCrop.width, imgCrop.height); 
+        frame_YUV420SP2RGB(&imgCrop, &imgRGB);
+        printf("color conversion done\n");
+
+        save_yuv420sp("crop_output.yuv", &imgCrop); 
+        save_rgb("crop_output.rgb", &imgRGB);
+
+
+        // nnn_execute((td_void*)imgAlgo.virt_addr[0], framelen, pOut);
         long nnntm = getms();
 #ifdef FEATURE_SORT
-        get_boundbox_features(imgAlgo.virt_addr[0], framelen, pOut);
-        track_deepsort(pOut);
+        // get_boundbox_features(imgAlgo.virt_addr[0], framelen, pOut);
+        // track_deepsort(pOut);
 #endif
+        // release resoucres for imgCrop
+        ss_mpi_sys_munmap(imgCrop.virt_addr[0], imgCrop.width * imgCrop.height * 3 / 2);
+        ss_mpi_vb_release_blk(vb_blk_crop); 
+
+        // release resoucres for imgRGB
+        ss_mpi_sys_munmap(imgRGB.virt_addr[0], imgRGB.width * imgRGB.height * 3);
+        ss_mpi_vb_release_blk(vb_blk_rgb); 
+
+        // write result 
         pthread_mutex_lock(&algolock);
         pDrawInfo->count = 0;
         pDrawInfo->id_count = 0;
@@ -504,12 +763,12 @@ void* sample_nnnn_proc(void* parg) {
             printf("=====================================================  nnn  %d fps\n", fps);
             fps = 0;
         }
+        nnn_thd_run = 0;  // debug
     }
     if (pOut) {
         free(pOut);
     }
-    ss_mpi_sys_munmap(imgAlgo.virt_addr[0], imgAlgo.width * imgAlgo.height * 3 / 2);
-    ss_mpi_vb_release_blk(vb_blk);
+    
     printf("%s %d\n", __FUNCTION__, __LINE__);
     return NULL;
 }
@@ -537,6 +796,7 @@ static td_s32 sample_vio_second_sensor(td_void) {
     }
     sns_type = SENSOR0_TYPE;
     sample_comm_vi_get_size_by_sns_type(sns_type, &in_size);
+
 
     (td_void)
         memset_s(&vi_cfg, sizeof(sample_vi_cfg), 0, sizeof(sample_vi_cfg));
@@ -620,6 +880,10 @@ static td_s32 sample_vio_all(td_void) {
     }
     sns_type = SENSOR0_TYPE;
     sample_comm_vi_get_size_by_sns_type(sns_type, &in_size);
+    printf("sensor intput height: %d\n", in_size.height);
+    printf("sensor intput width: %d\n", in_size.width);
+
+
     sample_comm_vi_get_default_vi_cfg(sns_type, &vi_cfg);
     ret = sample_comm_vi_start_vi(&vi_cfg);
     if (ret != TD_SUCCESS) {
@@ -641,14 +905,14 @@ static td_s32 sample_vio_all(td_void) {
     pDrawInfo = (stYolovDetectObjs*)malloc(sizeof(stYolovDetectObjs));
     pDrawInfo->count = 0;
     pthread_create(&nnn_pid, 0, sample_nnnn_proc, NULL);
-    pthread_create(&vodrawrc_pid, 0, sample_drawrec_proc, NULL);
+    // pthread_create(&vodrawrc_pid, 0, sample_drawrec_proc, NULL);
     UiAppMain();
 
     sample_get_char();
     UiAppMainStop();
     nnn_thd_run = 0;
     pthread_join(nnn_pid, 0);
-    pthread_join(vodrawrc_pid, 0);
+    // pthread_join(vodrawrc_pid, 0);
     free(pDrawInfo);
 
     sample_vio_stop_venc_and_vo(vpss_grp, grp_num);
@@ -694,3 +958,5 @@ td_s32 main(td_s32 argc, td_char* argv[]) {
     }
     exit(ret);
 }
+
+
