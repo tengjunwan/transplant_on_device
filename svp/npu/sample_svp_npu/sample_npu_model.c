@@ -23,6 +23,129 @@
 
 static npu_acl_model_t g_npu_acl_model[MAX_THREAD_NUM] = {0};
 
+
+// create datasets and databuffer just like "sample_npu_create_output"
+td_s32 sample_npu_create_input(td_u32 model_index) {
+    td_u32 input_size;
+
+    if (g_npu_acl_model[model_index].model_desc == TD_NULL) {
+        sample_svp_trace_err("no model description, create input failed\n");
+        return TD_FAILURE;
+    }
+
+    g_npu_acl_model[model_index].input_dataset = aclmdlCreateDataset();
+    if (g_npu_acl_model[model_index].input_dataset == TD_NULL) {
+        sample_svp_trace_err("can't create dataset, create input failed\n");
+        return TD_FAILURE;
+    }
+
+    input_size = aclmdlGetNumInputs(g_npu_acl_model[model_index].model_desc);
+    for (td_u32 i = 0; i < input_size; ++i) {
+        td_u32 buffer_size = aclmdlGetInputSizeByIndex(g_npu_acl_model[model_index].model_desc, i);
+        // allocate input buffer
+        td_void *input_buffer = TD_NULL;
+        td_s32 ret = aclrtMalloc(&input_buffer, buffer_size, ACL_MEM_MALLOC_NORMAL_ONLY);
+        if (ret != ACL_ERROR_NONE) {
+            sample_svp_trace_err("can't malloc buffer, size is %u, create input failed\n", buffer_size);
+            return TD_FAILURE;
+        }
+        // create input data buffer
+        aclDataBuffer *input_data = aclCreateDataBuffer(input_buffer, buffer_size);
+        if (input_data == TD_NULL) {
+            sample_svp_trace_err("can't create data buffer, create input failed\n");
+            aclrtFree(input_buffer);
+            return TD_FAILURE;
+        }
+        // add data buffer to dataset
+        ret = aclmdlAddDatasetBuffer(g_npu_acl_model[model_index].input_dataset, input_data);
+        if (ret != ACL_ERROR_NONE) {
+            sample_svp_trace_err("can't add data buffer, create input failed\n");
+            aclrtFree(input_buffer);
+            aclDestroyDataBuffer(input_data);
+            return TD_FAILURE;
+        }
+    }
+
+    sample_svp_trace_info("create model output TD_SUCCESS\n");
+    return TD_SUCCESS;
+}
+
+// om used in this sample has 2 inputs, just like 'sample_npu_create_input_databuf'
+td_s32 sample_npu_create_input_databufV2(td_void *data1_buf, size_t data1_len, td_void *data2_buf, size_t data2_len, td_u32 model_index) {
+    aclError ret;
+    if (g_npu_acl_model[model_index].model_desc == TD_NULL) {
+        sample_svp_trace_err("no model description, create input failed\n");
+        return TD_FAILURE;
+    }
+
+    // set 1st data buffer
+    size_t input1_size = aclmdlGetInputSizeByIndex(g_npu_acl_model[model_index].model_desc, 0);
+    if (data1_len != input1_size) {
+        sample_svp_trace_err("1st input image size[%zu] != 1st model input size[%zu]\n", data1_len, input1_size);
+        return TD_FAILURE;
+    }
+
+    aclDataBuffer *input1_data = aclCreateDataBuffer(data1_buf, data1_len);
+    if (input1_data == TD_NULL) {
+        sample_svp_trace_err("can't create 1st data buffer, create 1st input failed\n");
+        return TD_FAILURE;
+    }
+
+    ret = aclmdlAddDatasetBuffer(g_npu_acl_model[model_index].input_dataset, input1_data);
+    if (ret != ACL_SUCCESS) {
+        sample_svp_trace_err("add 1st input dataset buffer failed, ret is %d\n", ret);
+        (void)aclDestroyDataBuffer(input1_data);
+        input1_data = TD_NULL;
+        return TD_FAILURE;
+    }
+
+    // set 2nd data buffer
+    size_t input2_size = aclmdlGetInputSizeByIndex(g_npu_acl_model[model_index].model_desc, 1);
+    if (data2_len != input2_size) {
+        sample_svp_trace_err("2nd input image size[%zu] != 2dn model input size[%zu]\n", data_len2, input2_size);
+        return TD_FAILURE;
+    }
+
+    aclDataBuffer *input2_data = aclCreateDataBuffer(data2_buf, data2_len);
+    if (input2_data == TD_NULL) {
+        sample_svp_trace_err("can't create 2nd data buffer, create input failed\n");
+        return TD_FAILURE;
+    }
+
+    ret = aclmdlAddDatasetBuffer(g_npu_acl_model[model_index].input_dataset, input2_data);
+    if (ret != ACL_SUCCESS) {
+        sample_svp_trace_err("add 2nd input dataset buffer failed, ret is %d\n", ret);
+        (void)aclDestroyDataBuffer(input2_data);
+        input2_data = TD_NULL;
+        return TD_FAILURE;
+    }
+
+
+    sample_svp_trace_info("create model input success\n");
+
+    return TD_SUCCESS;
+}
+
+// destroy all input: inputdataset, inputdatabuffer, free databuffer, just like 'sample_npu_destroy_output'
+td_void sample_npu_destroy_input(td_u32 model_index) {
+    if (g_npu_acl_model[model_index].input_dataset == TD_NULL) {
+        return;
+    }
+
+    for (td_u32 i = 0; i < aclmdlGetDatasetNumBuffers(g_npu_acl_model[model_index].input_dataset); ++i) {
+        aclDataBuffer *data_buffer = aclmdlGetDatasetBuffer(g_npu_acl_model[model_index].input_dataset, i);
+        td_void *data = aclGetDataBufferAddr(data_buffer);
+        (td_void)aclrtFree(data);
+        (td_void)aclDestroyDataBuffer(data_buffer);
+    }
+
+    (td_void)aclmdlDestroyDataset(g_npu_acl_model[model_index].input_dataset);
+    g_npu_acl_model[model_index].input_dataset = TD_NULL;
+}
+
+
+//====================================below is reference code=======================================================
+
 td_s32 sample_npu_load_model_with_mem(const char *model_path, td_u32 model_index) {
     if (g_npu_acl_model[model_index].is_load_flag) {
         sample_svp_trace_err("has already loaded a model\n");
@@ -66,7 +189,58 @@ td_s32 sample_npu_load_model_with_mem(const char *model_path, td_u32 model_index
     g_npu_acl_model[model_index].is_load_flag = TD_TRUE;
     sample_svp_trace_info("load model %s success\n", model_path);
 
+
     return TD_SUCCESS;
+}
+
+void printModelIODescription(td_u32 model_index) {
+    aclmdlDesc *model_desc = g_npu_acl_model[model_index].model_desc;
+    if (model_desc == NULL) {
+        printf("model[%d] description is NULL.\n", model_index);
+        return;
+    }
+    td_u32 num_inputs = aclmdlGetNumInputs(model_desc);
+    td_u32 num_outputs = aclmdlGetNumOutputs(model_desc);
+
+    printf("model[%d] has %d inputs and %d outputs\n", model_index, num_inputs, num_outputs);
+
+    // print input details
+    for (td_u32 i = 0; i < num_inputs; i++) {
+        size_t input_size = aclmdlGetInputSizeByIndex(model_desc, i);
+        aclmdlIODims input_dims;
+        aclFormat input_format = aclmdlGetInputFormat(model_desc, i);
+        aclDataType input_data_type = aclmdlGetInputDataType(model_desc, i);
+
+        aclmdlGetInputDims(model_desc, i, &input_dims);
+        
+        
+
+        printf("input %d: size=%zu bytes, format=%d, dtype=%d, shape=[", i, input_size, input_format, input_data_type);
+        for (size_t j=0; j < input_dims.dimCount; j++) {
+            printf("%ld", input_dims.dims[j]);
+            if (j < input_dims.dimCount - 1) printf(", ");
+        }
+        printf("]\n");
+    }
+
+    // print output details
+    for (td_u32 i = 0; i < num_outputs; i++) {
+        size_t output_size = aclmdlGetOutputSizeByIndex(model_desc, i);
+        aclmdlIODims output_dims;
+        aclFormat output_format = aclmdlGetOutputFormat(model_desc, i);
+        aclDataType output_data_type = aclmdlGetOutputDataType(model_desc, i);
+
+        aclmdlGetOutputDims(model_desc, i, &output_dims);
+        
+        
+
+        printf("output %d: size=%zu bytes, format=%d, dtype=%d, shape=[", i, output_size, output_format, output_data_type);
+        for (size_t j=0; j < output_dims.dimCount; j++) {
+            printf("%ld", output_dims.dims[j]);
+            if (j < output_dims.dimCount - 1) printf(", ");
+        }
+        printf("]\n");
+    }
 }
 
 td_s32 sample_npu_load_model_with_mem_cached(const char *model_path, td_u32 model_index) {
@@ -220,6 +394,8 @@ td_s32 sample_npu_create_input_databuf(td_void *data_buf, size_t data_len, td_u3
 
     return TD_SUCCESS;
 }
+
+
 
 td_void sample_npu_destroy_input_databuf(td_u32 model_index) {
     td_u32 i;
@@ -433,6 +609,73 @@ td_void sample_npu_output_model_result(td_u32 model_index,stYolovDetectObjs* pOu
     }
 
     sample_svp_trace_info("output data success\n");
+    return;
+}
+
+td_void sample_npu_output_model_result_query(td_u32 model_index) {
+    aclDataBuffer *data_buffer = TD_NULL;
+    td_void *data = TD_NULL;
+    td_u32 len;
+
+    data_buffer = aclmdlGetDatasetBuffer(g_npu_acl_model[model_index].output_dataset, 0);
+    if (data_buffer == TD_NULL) {
+        sample_svp_trace_err("get data buffer null.\n");
+        return;
+    }
+    data = aclGetDataBufferAddr(data_buffer);
+    len = aclGetDataBufferSizeV2(data_buffer);
+
+    // debug 
+    printf("we have %d bytes output buffer of query model\n", len);
+
+    const char* filename = "query.result";
+    FILE *fp = fopen(filename, "wb");
+    if (!fp) {
+        printf("failed to open file %s\n", filename);
+        return;
+    }
+
+    fwrite((void*)data, 1, len, fp);
+
+    fclose(fp);
+    printf("save query result to %s\n", filename);
+
+
+    sample_svp_trace_info("output data of query model success\n");
+    return;
+}
+
+
+td_void sample_npu_output_model_result_memory(td_u32 model_index) {
+    aclDataBuffer *data_buffer = TD_NULL;
+    td_void *data = TD_NULL;
+    td_u32 len;
+
+    data_buffer = aclmdlGetDatasetBuffer(g_npu_acl_model[model_index].output_dataset, 0);
+    if (data_buffer == TD_NULL) {
+        sample_svp_trace_err("get data buffer null.\n");
+        return;
+    }
+    data = aclGetDataBufferAddr(data_buffer);
+    len = aclGetDataBufferSizeV2(data_buffer);
+
+    // debug 
+    printf("we have %d bytes output buffer of memory model\n", len);
+
+    const char* filename = "memory.result";
+    FILE *fp = fopen(filename, "wb");
+    if (!fp) {
+        printf("failed to open file %s\n", filename);
+        return;
+    }
+
+    fwrite((void*)data, 1, len, fp);
+
+    fclose(fp);
+    printf("save memory result to %s\n", filename);
+
+
+    sample_svp_trace_info("output data of memory model success\n");
     return;
 }
 

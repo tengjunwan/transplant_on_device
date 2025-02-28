@@ -88,7 +88,7 @@ static td_void save_yuv420sp(const char *filename, ot_svp_img *img) {
 }
 
 
-static td_void save_rgb(const char *filename, ot_svp_img *img) {
+static td_void save_rgb(const char* filename, ot_svp_img* img) {
     FILE *fp = fopen(filename, "wb");
     if (!fp) {
         printf("failed to open file %s\n", filename);
@@ -102,6 +102,40 @@ static td_void save_rgb(const char *filename, ot_svp_img *img) {
     fclose(fp);
     printf("save RGB image to %s\n", filename);
 }
+
+static td_void save_gray(const char* filename, ot_svp_img* img) {
+    FILE *fp = fopen(filename, "wb");
+    if (!fp) {
+        printf("failed to open file %s\n", filename);
+        return;
+    }
+
+
+    td_s32 size = img->width * img->height;
+    fwrite((void*)img->virt_addr[0], 1, size, fp);
+
+    fclose(fp);
+    printf("save Gray image to %s\n", filename);
+}
+
+
+static td_void load_rgb(const char* filename, ot_svp_img* img) {
+    FILE* fp = fopen(filename, "rb");
+    if (!fp) {
+        printf("Error: Failed to open file %s\n", filename);
+        return;
+    }
+
+    td_s32 size = img->width * img->height * 3;
+    size_t read_bytes = fread((void*)img->virt_addr[0], 1, size, fp);
+    fclose(fp);
+
+    if (read_bytes != size) {
+        printf("Error: File size mismatch. expected %d bytes, got %zu bytes\n", size, read_bytes);
+    }
+    printf("load RGB image from %s\n", filename);
+}
+
 
 static td_void sample_vi_get_default_vb_config(ot_size* size, ot_vb_cfg* vb_cfg, ot_vi_video_mode video_mode,
         td_u32 yuv_cnt, td_u32 raw_cnt) {
@@ -172,10 +206,10 @@ static td_s32 sample_vio_start_vpss(ot_vpss_grp grp, ot_size* in_size) {
     ot_vpss_chn_attr chn_attrex[2];
     memcpy(&chn_attrex[0], &chn_attr, sizeof(chn_attr));
     memcpy(&chn_attrex[1], &chn_attr, sizeof(chn_attr));
-    // chn_attrex[1].width = 640;
-    // chn_attrex[1].height = 640;
-    chn_attrex[1].width = 1280;
-    chn_attrex[1].height = 1280;
+    chn_attrex[1].width = 640;
+    chn_attrex[1].height = 640;
+    // chn_attrex[1].width = 1280;
+    // chn_attrex[1].height = 1280;
     chn_attrex[1].compress_mode = OT_COMPRESS_MODE_NONE;
     chn_attrex[1].depth = 1;
 
@@ -530,7 +564,7 @@ td_s32 frame_resize(ot_svp_img* srcRGB, ot_svp_img* dstRGB) {
            resize_ctrl.mem.phys_addr, (void*)resize_ctrl.mem.virt_addr, resize_ctrl.mem.size);
     td_s32 ret_mem = ss_mpi_sys_mmz_alloc(&resize_ctrl.mem.phys_addr, (td_void**)&resize_ctrl.mem.virt_addr,
                                           "resize_mem", TD_NULL, mem_size);
-    resize_ctrl.mem.size = mem_size;
+    resize_ctrl.mem.size = mem_size; // need to be set manually!
     if (ret_mem != TD_SUCCESS) {
         printf("Errror: failed to allocate memory for resize_ctrl.mem!\n");
         return TD_FAILURE;
@@ -623,8 +657,8 @@ ot_vb_blk CreateYUV420SPFrame(ot_svp_img* img, td_s32 w, td_s32 h) {
 
 
 ot_vb_blk CreateRGBFrame(ot_svp_img* img, td_s32 w, td_s32 h) {
-    w &= ~1; // make w even
-    h &= ~1; // make h even
+    // w &= ~1; // make w even
+    // h &= ~1; // make h even
 
     // calculate required memory size for RGB
     td_s32 vbsize = w * h * 3;
@@ -655,6 +689,9 @@ ot_vb_blk CreateRGBFrame(ot_svp_img* img, td_s32 w, td_s32 h) {
         return OT_VB_INVALID_HANDLE;
     }
 
+    // zero init
+    memset((void*)img->virt_addr[0], 0, vbsize);
+
     img->stride[0] = w;
     img->stride[1] = w;
     img->stride[2] = w;
@@ -667,6 +704,51 @@ ot_vb_blk CreateRGBFrame(ot_svp_img* img, td_s32 w, td_s32 h) {
 
     return vb_blk; // return allocated block
 }
+
+
+ot_vb_blk CreateGrayFrame(ot_svp_img* img, td_s32 w, td_s32 h) {
+    // w &= ~1; // make w even
+    // h &= ~1; // make h even
+
+    // calculate required memory size for Gray
+    td_s32 vbsize = w * h;
+
+    // allocate memory using Video Buffer Block(VB)
+    ot_vb_blk vb_blk = ss_mpi_vb_get_blk(OT_VB_INVALID_POOL_ID, vbsize, TD_NULL);
+    if (vb_blk == OT_VB_INVALID_HANDLE) {
+        printf("Error: Failed to allcoate VB block! for Gray frame\n");
+        return OT_VB_INVALID_HANDLE;
+    }
+
+    img->phys_addr[0] = ss_mpi_vb_handle_to_phys_addr(vb_blk); // single plane
+    if (img->phys_addr[0] == 0) {
+        printf("Error: Failed to get physical address! for Gray frame\n");
+        ss_mpi_vb_release_blk(vb_blk);
+        return OT_VB_INVALID_HANDLE;
+    }
+
+    
+    img->virt_addr[0] = (td_u64)(td_u8*)ss_mpi_sys_mmap(img->phys_addr[0], vbsize);
+    if (img->virt_addr[0] == 0) {
+        printf("Error: Failed to get virtual address! for Gray frame\n");
+        ss_mpi_vb_release_blk(vb_blk);
+        return OT_VB_INVALID_HANDLE;
+    }
+
+    // zero init
+    memset((void*)img->virt_addr[0], 0, vbsize);
+
+    img->stride[0] = w;
+    img->width = w;
+    img->height = h;
+    img->type = OT_SVP_IMG_TYPE_U8C1;
+
+    printf("Gray frame: w=%d, h=%d, stride[0]=%d\n", 
+            img->width, img->height, img->stride[0]);
+
+    return vb_blk; // return allocated block
+}
+
 
 void* sample_drawrec_proc(void* parg) {
     ot_vpss_grp grp = 0;
@@ -723,11 +805,12 @@ void* sample_nnnn_proc(void* parg) {
     td_s32 milli_sec = 40;
     td_s32  ret;
     printf("%s %d\n", __FUNCTION__, __LINE__);
-    nnn_init();
+    // nnn_init();
+    stmtrack_init();
 #ifdef FEATURE_SORT
-    nnn_feature_init();
-    printf("nnn_feature_init success\n");
-    deepsort_init();
+    // nnn_feature_init();
+    // printf("nnn_feature_init success\n");
+    // deepsort_init();
 #endif
     int policy;
     struct sched_param param;
@@ -737,11 +820,26 @@ void* sample_nnnn_proc(void* parg) {
     pthread_setschedparam(pthread_self(), policy, &param);
 
     stYolovDetectObjs* pOut = (stYolovDetectObjs*)malloc(sizeof(stYolovDetectObjs));
-    ot_svp_img imgAlgo;
+    ot_svp_img imgQuery;
+    ot_svp_img imgMemory;
+    ot_svp_img imgMask;
     // CreateUsrFrame(&imgAlgo, 640, 640);
-    // CreateUsrFrame(&imgAlgo, 320, 320);
-    ot_vb_blk vb_blk_algo = CreateRGBFrame(&imgAlgo, 128, 128); // for model input
-    printf("640 resolution\n");
+    // CreateUsrFrame(&imgAlgo, 640, 640);
+    
+    ot_vb_blk vb_blk_query = CreateRGBFrame(&imgQuery, 289, 289); // for query model input
+    ot_vb_blk vb_blk_memory = CreateRGBFrame(&imgMemory, 289, 289);  // for memory model input
+    ot_vb_blk vb_blk_mask = CreateGrayFrame(&imgMask, 289, 289);  // for memory mask input
+
+
+    size_t imgQuerySize = imgQuery.width * imgQuery.height * 3;  // bytes for uint8 input
+    size_t imgMemorySize = imgMemory.width * imgMemory.height * 3;
+    size_t imgMaskSize = imgMask.width * imgMask.height;
+
+
+    // debug consistence
+    const char* filename = "resize_output289_standard.rgb";
+    load_rgb(filename, &imgMemory);
+    printf("load rgb to memory image\n");
 
     int fps = 0;
     long prems = getms();
@@ -752,40 +850,48 @@ void* sample_nnnn_proc(void* parg) {
             continue;
         }
         
-        int w = imgAlgo.width;
-        int h = imgAlgo.height;
-        int framelen = w * h * 3 / 2;
+        
         long start = getms();
         // framecpy(&imgAlgo, &frame_info);
 
         // ==================crop====================
-        // allocate cropImage(YUV420SP)
-        td_s32 crop_x = 640;
-        td_s32 crop_y = 640;
-        td_s32 crop_w = 640;
-        td_s32 crop_h = 640;
+        td_s32 crop_x = 160;
+        td_s32 crop_y = 160;
+        td_s32 crop_w = 480;
+        td_s32 crop_h = 480;
         ot_svp_img imgCrop;
         ot_vb_blk vb_blk_crop = CreateYUV420SPFrame(&imgCrop, crop_w, crop_h); // for crop
-        frame_crop(&imgCrop, &frame_info, crop_x, crop_y);
-        printf("cropp done\n");
+        // frame_crop(&imgCrop, &frame_info, crop_x, crop_y);
+        // printf("cropp done\n");
         
 
         // ==================color conversion====================
         ot_svp_img imgRGB;
         ot_vb_blk vb_blk_rgb = CreateRGBFrame(&imgRGB, imgCrop.width, imgCrop.height); 
-        frame_YUV420SP2RGB(&imgCrop, &imgRGB);
-        printf("color conversion done\n");
+        // frame_YUV420SP2RGB(&imgCrop, &imgRGB);
+        // printf("color conversion done\n");
 
         //===================resize=====================
-        frame_resize(&imgRGB, &imgAlgo);
-        printf("resizing done\n");
+        // frame_resize(&imgRGB, &imgAlgo);
+        // resizeRGBBuffer(imgRGB.virt_addr[0], imgRGB.width, imgRGB.height,
+                        // imgAlgo.virt_addr[0], imgAlgo.width, imgAlgo.height);
+        // printf("resizing done\n");
 
-        save_yuv420sp("crop_output.yuv", &imgCrop); 
-        save_rgb("crop_output.rgb", &imgRGB);
-        save_rgb("resize_output.rgb", &imgAlgo);
+        // save_yuv420sp("crop_output.yuv", &imgCrop); 
+        // save_rgb("crop_output.rgb", &imgRGB);
+        save_rgb("resize_query.rgb", &imgQuery);
+        save_rgb("resize_memory.rgb", &imgMemory);
+        save_gray("resize_mask.gray", &imgMask);
 
 
         // nnn_execute((td_void*)imgAlgo.virt_addr[0], framelen, pOut);
+        // query_execute((td_void*)imgQuery.virt_addr[0], imgQuerySize);
+        // memory_execute((td_void*)imgMemory.virt_addr[0], imgMemorySize, 
+        //                (td_void*)imgMask.virt_addr[0], imgMaskSize);
+
+        stm_execute((td_void*)imgQuery.virt_addr[0], imgQuerySize,
+                    (td_void*)imgMemory.virt_addr[0], imgMemorySize, 
+                    (td_void*)imgMask.virt_addr[0], imgMaskSize);
         long nnntm = getms();
 #ifdef FEATURE_SORT
         // get_boundbox_features(imgAlgo.virt_addr[0], framelen, pOut);
@@ -801,24 +907,24 @@ void* sample_nnnn_proc(void* parg) {
 
         // write result 
         pthread_mutex_lock(&algolock);
-        pDrawInfo->count = 0;
-        pDrawInfo->id_count = 0;
-        for (size_t i = 0; i < pOut->count; i++) {
-            pDrawInfo->objs[i].x = pOut->objs[i].x;
-            pDrawInfo->objs[i].y = pOut->objs[i].y;
-            pDrawInfo->objs[i].w = pOut->objs[i].w;
-            pDrawInfo->objs[i].h = pOut->objs[i].h;
-        }
+        // pDrawInfo->count = 0;
+        // pDrawInfo->id_count = 0;
+        // for (size_t i = 0; i < pOut->count; i++) {
+        //     pDrawInfo->objs[i].x = pOut->objs[i].x;
+        //     pDrawInfo->objs[i].y = pOut->objs[i].y;
+        //     pDrawInfo->objs[i].w = pOut->objs[i].w;
+        //     pDrawInfo->objs[i].h = pOut->objs[i].h;
+        // }
 
-        for (size_t i = 0; i < pOut->id_count; i++) {
-            pDrawInfo->id_objs[i].id = pOut->id_objs[i].id;
-            pDrawInfo->id_objs[i].x = pOut->id_objs[i].x;
-            pDrawInfo->id_objs[i].y = pOut->id_objs[i].y;
-            pDrawInfo->id_objs[i].w = pOut->id_objs[i].w;
-            pDrawInfo->id_objs[i].h = pOut->id_objs[i].h;
-        }
-        pDrawInfo->count = pOut->count;
-        pDrawInfo->id_count = pOut->id_count;
+        // for (size_t i = 0; i < pOut->id_count; i++) {
+        //     pDrawInfo->id_objs[i].id = pOut->id_objs[i].id;
+        //     pDrawInfo->id_objs[i].x = pOut->id_objs[i].x;
+        //     pDrawInfo->id_objs[i].y = pOut->id_objs[i].y;
+        //     pDrawInfo->id_objs[i].w = pOut->id_objs[i].w;
+        //     pDrawInfo->id_objs[i].h = pOut->id_objs[i].h;
+        // }
+        // pDrawInfo->count = pOut->count;
+        // pDrawInfo->id_count = pOut->id_count;
         pthread_mutex_unlock(&algolock);
 
         long deepsort = getms();
@@ -836,6 +942,13 @@ void* sample_nnnn_proc(void* parg) {
     if (pOut) {
         free(pOut);
     }
+    // release of query, memory and mask
+    ss_mpi_sys_munmap(imgQuery.virt_addr[0], imgQuery.width * imgQuery.height * 3);
+    ss_mpi_vb_release_blk(vb_blk_query); 
+    ss_mpi_sys_munmap(imgMemory.virt_addr[0], imgMemory.width * imgMemory.height * 3);
+    ss_mpi_vb_release_blk(vb_blk_memory); 
+    ss_mpi_sys_munmap(imgMask.virt_addr[0], imgMask.width * imgMask.height);
+    ss_mpi_vb_release_blk(vb_blk_mask); 
     
     printf("%s %d\n", __FUNCTION__, __LINE__);
     return NULL;
