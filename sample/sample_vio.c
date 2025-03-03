@@ -806,7 +806,7 @@ void* sample_nnnn_proc(void* parg) {
     td_s32  ret;
     printf("%s %d\n", __FUNCTION__, __LINE__);
     // nnn_init();
-    stmtrack_init();
+    stmtrack_prepare_init_resources();
 #ifdef FEATURE_SORT
     // nnn_feature_init();
     // printf("nnn_feature_init success\n");
@@ -889,9 +889,9 @@ void* sample_nnnn_proc(void* parg) {
         // memory_execute((td_void*)imgMemory.virt_addr[0], imgMemorySize, 
         //                (td_void*)imgMask.virt_addr[0], imgMaskSize);
 
-        stm_execute((td_void*)imgQuery.virt_addr[0], imgQuerySize,
-                    (td_void*)imgMemory.virt_addr[0], imgMemorySize, 
-                    (td_void*)imgMask.virt_addr[0], imgMaskSize);
+        stmtrack_execute((td_void*)imgQuery.virt_addr[0], imgQuerySize,
+                         (td_void*)imgMemory.virt_addr[0], imgMemorySize, 
+                         (td_void*)imgMask.virt_addr[0], imgMaskSize);
         long nnntm = getms();
 #ifdef FEATURE_SORT
         // get_boundbox_features(imgAlgo.virt_addr[0], framelen, pOut);

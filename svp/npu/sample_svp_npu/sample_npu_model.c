@@ -144,6 +144,80 @@ td_void sample_npu_destroy_input(td_u32 model_index) {
 }
 
 
+void sample_npu_model_link_buffer(td_u32 model1_index, td_u32 model2_index, td_u32 model3_index){
+    // fetch dataset
+    aclmdlDataset *output1_dataset, *output2_dataset, *input3_dataset;
+    if (g_npu_acl_model[model1_index].output_dataset == TD_NULL) {
+        printf("link error, model1 has no output dataset");
+        return;
+    }
+    if (g_npu_acl_model[model2_index].output_dataset == TD_NULL) {
+        printf("link error, model2 has no output dataset");
+        return;
+    }
+    if (g_npu_acl_model[model3_index].input_dataset == TD_NULL) {
+        printf("link error, model3 has no input dataset");
+        return;
+    }
+    // fetch data buffer
+    aclDataBuffer *output1_databuffer, *output2_databuffer, *input3_databuffer;
+    // input3_databuffer = aclmdlGetDatasetBuffer(g_npu_acl_model[model3_index].input_dataset, 0);
+    // if (input3_databuffer != TD_NULL) {
+    //     printf("link error, model3 already has input databuffer");
+    //     return;
+    // }
+    printf("link check done0\n");
+    output1_databuffer = aclmdlGetDatasetBuffer(g_npu_acl_model[model1_index].output_dataset, 0);
+    if (output1_databuffer == TD_NULL) {
+        printf("link error, model1 already has not output databuffer");
+        return;
+    }
+    printf("link check done1\n");
+    output2_databuffer = aclmdlGetDatasetBuffer(g_npu_acl_model[model2_index].output_dataset, 0);
+    if (output2_databuffer == TD_NULL) {
+        printf("link error, model2 already has not output databuffer");
+        return;
+    }
+    printf("link check done2\n");
+    // add output databuffers of model1 and model2 to the input dataset of model3
+    aclmdlAddDatasetBuffer(g_npu_acl_model[model3_index].input_dataset, output2_databuffer); // fm
+    aclmdlAddDatasetBuffer(g_npu_acl_model[model3_index].input_dataset, output1_databuffer); // fq
+}
+
+
+void create_dummy_inputdatabuffer(td_u32 model_index){
+    // fetch dataset
+    if (g_npu_acl_model[model_index].model_desc == TD_NULL) {
+        printf("desc null\n");
+        return;
+    }
+    if (g_npu_acl_model[model_index].input_dataset == TD_NULL) {
+        printf("input dataset null\n");
+        return;
+    }
+    td_u32 input_size = aclmdlGetNumInputs(g_npu_acl_model[model_index].model_desc);
+    for (td_u32 i = 0; i < input_size; ++i) {
+        td_u32 buffer_size = aclmdlGetInputSizeByIndex(g_npu_acl_model[model_index].model_desc, i);
+        td_void *input_buffer = TD_NULL;
+        td_s32 ret = aclrtMalloc(&input_buffer, buffer_size, ACL_MEM_MALLOC_NORMAL_ONLY);
+        if (ret != ACL_ERROR_NONE) {
+            printf("allcoate error\n");
+            return;
+        }
+        aclDataBuffer *input_data = aclCreateDataBuffer(input_buffer, buffer_size);
+        if (input_data == TD_NULL) {
+            printf("data buffer create error\n");
+            return;
+        }
+        ret = aclmdlAddDatasetBuffer(g_npu_acl_model[model_index].input_dataset, input_data);
+        if (ret != ACL_ERROR_NONE) {
+            printf("data buffer add error\n");
+            return;
+        }
+    }
+    printf("dummy input created successfully");
+}
+
 //====================================below is reference code=======================================================
 
 td_s32 sample_npu_load_model_with_mem(const char *model_path, td_u32 model_index) {
@@ -678,6 +752,124 @@ td_void sample_npu_output_model_result_memory(td_u32 model_index) {
     sample_svp_trace_info("output data of memory model success\n");
     return;
 }
+
+td_void sample_npu_output_model_result_head(td_u32 model_index) {
+    aclDataBuffer *data_buffer = TD_NULL;
+    td_void *data = TD_NULL;
+    td_u32 len;
+
+    // first output
+    data_buffer = aclmdlGetDatasetBuffer(g_npu_acl_model[model_index].output_dataset, 0);
+    if (data_buffer == TD_NULL) {
+        sample_svp_trace_err("get data buffer null.\n");
+        return;
+    }
+    data = aclGetDataBufferAddr(data_buffer);
+    len = aclGetDataBufferSizeV2(data_buffer);
+
+    // debug 
+    printf("we have %d bytes output buffer[0] of head model\n", len);
+
+    const char* filename1 = "head_1.result";
+    FILE *fp1 = fopen(filename1, "wb");
+    if (!fp1) {
+        printf("failed to open file %s\n", filename1);
+        return;
+    }
+
+    fwrite((void*)data, 1, len, fp1);
+
+    fclose(fp1);
+    printf("save head result[0] to %s\n", filename1);
+
+    // first output
+    data_buffer = aclmdlGetDatasetBuffer(g_npu_acl_model[model_index].output_dataset, 1);
+    if (data_buffer == TD_NULL) {
+        sample_svp_trace_err("get data buffer null.\n");
+        return;
+    }
+    data = aclGetDataBufferAddr(data_buffer);
+    len = aclGetDataBufferSizeV2(data_buffer);
+
+    // debug 
+    printf("we have %d bytes output buffer[1] of head model\n", len);
+
+    const char* filename2 = "head_2.result";
+    FILE *fp2 = fopen(filename2, "wb");
+    if (!fp2) {
+        printf("failed to open file %s\n", filename2);
+        return;
+    }
+
+    fwrite((void*)data, 1, len, fp2);
+
+    fclose(fp2);
+    printf("save head result[1] to %s\n", filename2);
+
+
+    sample_svp_trace_info("output data of head model success\n");
+    return;
+}
+
+
+td_void sample_npu_output_model_input_head(td_u32 model_index) {
+    aclDataBuffer *data_buffer = TD_NULL;
+    td_void *data = TD_NULL;
+    td_u32 len;
+
+    // first output
+    data_buffer = aclmdlGetDatasetBuffer(g_npu_acl_model[model_index].input_dataset, 0);
+    if (data_buffer == TD_NULL) {
+        sample_svp_trace_err("get data buffer null.\n");
+        return;
+    }
+    data = aclGetDataBufferAddr(data_buffer);
+    len = aclGetDataBufferSizeV2(data_buffer);
+
+    // debug 
+    printf("we have %d bytes input buffer[0] of head model\n", len);
+
+    const char* filename1 = "head_1_input.result";
+    FILE *fp1 = fopen(filename1, "wb");
+    if (!fp1) {
+        printf("failed to open file %s\n", filename1);
+        return;
+    }
+
+    fwrite((void*)data, 1, len, fp1);
+
+    fclose(fp1);
+    printf("save head input[0] result to %s\n", filename1);
+
+    // first output
+    data_buffer = aclmdlGetDatasetBuffer(g_npu_acl_model[model_index].input_dataset, 1);
+    if (data_buffer == TD_NULL) {
+        sample_svp_trace_err("get data buffer null.\n");
+        return;
+    }
+    data = aclGetDataBufferAddr(data_buffer);
+    len = aclGetDataBufferSizeV2(data_buffer);
+
+    // debug 
+    printf("we have %d bytes input buffer[1] of head model\n", len);
+
+    const char* filename2 = "head_2_input.result";
+    FILE *fp2 = fopen(filename2, "wb");
+    if (!fp2) {
+        printf("failed to open file %s\n", filename2);
+        return;
+    }
+
+    fwrite((void*)data, 1, len, fp2);
+
+    fclose(fp2);
+    printf("save head input[1] result to %s\n", filename2);
+
+
+    sample_svp_trace_info("output data of head model success\n");
+    return;
+}
+
 
 td_void sample_npu_destroy_output(td_u32 model_index) {
     if (g_npu_acl_model[model_index].output_dataset == TD_NULL) {

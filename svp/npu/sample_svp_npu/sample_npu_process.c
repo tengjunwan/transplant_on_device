@@ -72,8 +72,20 @@ static td_void stmtrack_destroy_resource(td_void)
     sample_svp_trace_info("end to finalize acl\n");
 }
 
+static td_void stmtrack_loading_stage_cleanup(td_u32 model_num)
+{   //
+    for (td_u32 model_index = 0; model_index < model_num; model_index++) {
+        sample_npu_destroy_desc(model_index);
+        sample_npu_unload_model(model_index);
+    }
+    stmtrack_destroy_resource();
+}
 
-static td_s32 stmtrack_prepare_init_resources()
+
+static td_s32 sample_svp_npu_load_model(const char* om_model_path, td_u32 model_index, td_bool is_cached); // prototype
+
+
+td_s32 stmtrack_prepare_init_resources()
 {   // do all the preparations: acl init, model_loading, buffer allocate, dataset create since it's static inference
     td_s32 ret;
 
@@ -81,7 +93,7 @@ static td_s32 stmtrack_prepare_init_resources()
     ret = stmtrack_init_resource();
     if (ret != TD_SUCCESS) {
         stmtrack_destroy_resource();
-        return ret
+        return ret;
     }
 
     // ===================load models==================
@@ -105,6 +117,7 @@ static td_s32 stmtrack_prepare_init_resources()
 
     // load readMemoryAndHead model
     const char *om_model_path_readMemoryAndHead = "STMTrack_ReadMemoryAndHead.om";  
+    // const char *om_model_path_readMemoryAndHead = "STMTrack_FeatureExtractionMemory.om";  
     printf("start loading model: %s\n", om_model_path_readMemoryAndHead);  
     ret = sample_svp_npu_load_model(om_model_path_readMemoryAndHead, 2, TD_FALSE); // model index = '2'
     if (ret != TD_SUCCESS) {
@@ -120,15 +133,10 @@ acl_process_end0:
     return ret;
 }
 
-static td_void stmtrack_loading_stage_cleanup(td_u32 model_num)
-{   //
-    for (td_u32 model_index = 0; model_index < model_num; model_index++) {
-        sample_npu_destroy_desc(model_index);
-        sample_npu_unload_model(model_index);
-    }
-    stmtrack_destroy_resource();
-}
 
+
+static td_s32 sample_svp_npu_dataset_prepare_init(td_u32 model_index); // prototype
+static td_s32 sample_svp_npu_create_input_databuf(td_void *data_buf, size_t data_len, td_u32 model_index); // prototype
 
 td_s32 stmtrack_execute(td_void* query_buf, size_t query_len, td_void* memory_buf, size_t memory_len, 
                         td_void* mask_buf, size_t mask_len)
@@ -159,31 +167,48 @@ td_s32 stmtrack_execute(td_void* query_buf, size_t query_len, td_void* memory_bu
     
     // run query model
     ret = sample_npu_model_execute(0);
-
-    // run memory model
-    ret = sample_npu_model_execute(1);
-
-    // link output databuffer of query & memory model to inputdataset of readMemoryAndHead
-    ret = sample_npu_model_link_buffer(0, 1, 2); // TODO
-
-    // run readMemoryAndHead model
-    ret = sample_npu_model_execute(2);
-    
     if (ret != TD_SUCCESS) {
         sample_svp_trace_err("memcpy_s device buffer fail.\n");
         return -1;
     }
-    ret = sample_npu_model_execute(model_index); // wrapper of 'aclmdExecute'
+    printf("query model inference done;\n");
+
+    // run memory model
+    ret = sample_npu_model_execute(1);
     if (ret != TD_SUCCESS) {
-        sample_svp_trace_err("execute inference fail.\n");
+        sample_svp_trace_err("memcpy_s device buffer fail.\n");
         return -1;
     }
     printf("memory model inference done;\n");
+
+    // link output databuffer of query & memory model to inputdataset of readMemoryAndHead
+    sample_npu_model_link_buffer(0, 1, 2); 
+    // create_dummy_inputdatabuffer(2);
+    printf("link done\n");
+
+    // run readMemoryAndHead model
+    ret = sample_npu_model_execute(2);
+    if (ret != TD_SUCCESS) {
+        sample_svp_trace_err("memcpy_s device buffer fail.\n");
+        return -1;
+    }
+    printf("readMemoryAndHead model inference done;\n");
+    // output final output
+    // sample_npu_output_model_result_memory(model_index);
+
+    // for consistency debug
+    sample_npu_output_model_result_query(0);
+    sample_npu_output_model_result_memory(1);
+    sample_npu_output_model_input_head(2);
+    sample_npu_output_model_result_head(2);
+
     // sample_npu_output_model_result(0, pOut);
-    sample_npu_output_model_result_memory(model_index);
-    sample_npu_destroy_input_databuf(model_index);
-    sample_npu_destroy_output(model_index);
-    sample_npu_destroy_input_dataset(model_index);
+    // destroy all datasets and databuffers for all models
+    for (td_u32 i = 0; i < 3; i++) {
+        sample_npu_destroy_output(i); // release output databuffer and destory output dataset
+        sample_npu_destroy_input_dataset(i); // only destroy input dataset
+    }
+    
     return 0;
 }
 
