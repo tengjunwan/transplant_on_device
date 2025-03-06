@@ -14,6 +14,8 @@
 #include <float.h>
 #include <stdio.h>
 #include <vector>
+#include <cmath>
+#include <array>
 
 struct Object {
   cv::Rect_<float> rect;
@@ -242,4 +244,127 @@ int ncnn_result_yolov8(float *src, unsigned int len, stYolovDetectObjs *pOut) {
   }
   draw_objects(objects);
   return 0;
+}
+
+// =======================================object tracing stuff===========================================
+
+
+// post-process hyperparameters
+static const float penalty_k=0.04f;
+static const float window_influence = 0.21f;
+static const float test_lr = 0.95f;
+static float consine_window[625];
+static bool consine_window_initialized = false;
+
+
+constexpr float PI = 3.14159265358979323846f;
+// init windows once(call this at startup)
+void init_cosine_window() {
+  for (int i = 0; i < 25; i++) {
+    for (int j = 0; j < 25; j++) {
+      float h = 0.5f * (1 - cosf(2 * PI * i / 24));
+      float w = 0.5f * (1 - cosf(2 * PI * j / 24));
+      consine_window[i * 25 + j] = h * w;
+    }
+  }
+}
+
+
+
+// size function
+float size_with_pad(float w, float h) {
+  float pad = (w + h) * 0.5f;
+  return sqrtf((w + pad) * (h + pad));
+}
+
+// post-process score and apply penalties
+int postprocess_score(const float *score, const float *bbox,
+                      const stmTrackerState *state,
+                      float pscore[625], float penalty[625]) {
+                      
+  float prev_w = state->w / state->scale; // back to 289 scale
+  float prev_h = state->h / state->scale; // back to 289 scale
+  float prev_size = size_with_pad(prev_w, prev_h);
+  float prev_ratio = prev_w / prev_h;
+
+  for (int i = 0; i< 625; i++) {
+    float w = bbox[i * 4 + 2] - bbox[i * 4];  // w = x1 - x0
+    float h = bbox[i * 4 + 3] - bbox[i * 4 + 1];  // h = y1 - y0
+
+    // size change
+    float current_size = size_with_pad(w, h);
+    float size_change = std::max(current_size / prev_size, prev_size / current_size);
+
+    // ratio change
+    float current_ratio = w / h;
+    float ratio_change = std::max(current_ratio / prev_ratio, prev_ratio / current_ratio);
+
+    // penalty over score(due to deformation)
+    penalty[i] = expf((1.0f - size_change * ratio_change) * penalty_k);
+    pscore[i] = penalty[i] * score[i];
+
+    // reduce pscore by rapid position change
+    pscore[i] = pscore[i] * (1 - window_influence) + consine_window[i] * window_influence;
+  }
+
+  int best_pscore_id = std::max_element(pscore, pscore + 625) - pscore;
+
+  return best_pscore_id;
+}
+
+
+// post-process bbox (EMA update)
+std::array<float, 4> postprocess_bbox(const float *score, const float *bbox,
+                      const stmTrackerState *state,
+                      const float penalty[625], int best_id) {
+  // get the best bbox
+  float x0 = bbox[best_id * 4] * state->scale;  // back to source scale
+  float y0 = bbox[best_id * 4 + 1] * state->scale;
+  float x1 = bbox[best_id * 4 + 2] * state->scale;
+  float y1 = bbox[best_id * 4 + 3] * state->scale;
+
+  // xyxy to cxcywh, and back to global coordinate
+  float cx = (x0 + x1) * 0.5 + state->cx - (289.0f / 2.0f) * state->scale;
+  float cy = (y0 + y1) * 0.5 + state->cy - (289.0f / 2.0f) * state->scale;
+  float w = x1 - x0;
+  float h = y1 - y0;
+
+  // update wh by EAM
+  float lr = penalty[best_id] * score[best_id] * test_lr;
+  w = state->w * (1 - lr) + w * lr;
+  h = state->h * (1 - lr) + h * lr;
+
+  return {cx, cy, w, h};  
+}
+
+
+int result_stmtrack(const float *srcScore, unsigned int lenScore, const float *srcBbox, unsigned int lenBbox, stmTrackerState *state) {
+  // tips: score.shape=(1, 625=25*25, 1), bbox.shape=(1, 625=25*25, 4)
+  if (lenScore != 625 || lenBbox != 625 * 4) {
+    return -1;
+  }
+
+  if (!consine_window_initialized) {
+    init_cosine_window();
+    consine_window_initialized = true;
+    printf("cosine window initializated\n");
+  }
+
+
+
+  // score post-process
+  float pscore[625], penalty[625];
+  int best_id = postprocess_score(srcScore, srcBbox, state, pscore, penalty);
+
+  printf("best_id: %d\n", best_id);
+
+  // bbox post-process
+  std::array<float, 4> bbox = postprocess_bbox(srcScore, srcBbox, state, penalty, best_id);
+
+  // update score
+  state->cx = bbox[0];
+  state->cy = bbox[1];
+  state->w = bbox[2];
+  state->h = bbox[3];
+  state->score = pscore[best_id];
 }

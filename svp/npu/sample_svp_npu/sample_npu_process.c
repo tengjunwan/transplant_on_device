@@ -14,6 +14,7 @@
 #include <semaphore.h>
 #include <pthread.h>
 #include <limits.h>
+#include <math.h>
 
 #include "ot_common_svp.h"
 #include "sample_common_svp.h"
@@ -139,7 +140,7 @@ static td_s32 sample_svp_npu_dataset_prepare_init(td_u32 model_index); // protot
 static td_s32 sample_svp_npu_create_input_databuf(td_void *data_buf, size_t data_len, td_u32 model_index); // prototype
 
 td_s32 stmtrack_execute(td_void* query_buf, size_t query_len, td_void* memory_buf, size_t memory_len, 
-                        td_void* mask_buf, size_t mask_len)
+                        td_void* mask_buf, size_t mask_len, stmTrackerState* state)
 {
     // model_index=0: query model
     // model_index=1: memory model
@@ -197,10 +198,13 @@ td_s32 stmtrack_execute(td_void* query_buf, size_t query_len, td_void* memory_bu
     // sample_npu_output_model_result_memory(model_index);
 
     // for consistency debug
-    sample_npu_output_model_result_query(0);
-    sample_npu_output_model_result_memory(1);
-    sample_npu_output_model_input_head(2);
-    sample_npu_output_model_result_head(2);
+    // sample_npu_output_model_result_query(0);
+    // sample_npu_output_model_result_memory(1);
+    // sample_npu_output_model_input_head(2);
+    // sample_npu_output_model_result_head_debug(2);
+
+    // load model output
+    sample_npu_output_model_result_head(2, state);
 
     // sample_npu_output_model_result(0, pOut);
     // destroy all datasets and databuffers for all models
@@ -230,6 +234,8 @@ static td_s32 sample_svp_npu_dataset_prepare_initV2(td_u32 model_index)
     }
     return TD_SUCCESS;
 }
+
+
 
 
 

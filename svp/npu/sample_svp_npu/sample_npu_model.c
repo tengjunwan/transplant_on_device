@@ -753,7 +753,7 @@ td_void sample_npu_output_model_result_memory(td_u32 model_index) {
     return;
 }
 
-td_void sample_npu_output_model_result_head(td_u32 model_index) {
+td_void sample_npu_output_model_result_head_debug(td_u32 model_index) {
     aclDataBuffer *data_buffer = TD_NULL;
     td_void *data = TD_NULL;
     td_u32 len;
@@ -810,6 +810,36 @@ td_void sample_npu_output_model_result_head(td_u32 model_index) {
     sample_svp_trace_info("output data of head model success\n");
     return;
 }
+
+td_void sample_npu_output_model_result_head(td_u32 model_index, stmTrackerState* state) {
+    aclDataBuffer* score_buffer = TD_NULL;
+    aclDataBuffer* bbox_buffer = TD_NULL;
+    td_void* score = TD_NULL;
+    td_void* bbox = TD_NULL;
+    td_u32 len_score, len_bbox;
+
+    // score 
+    score_buffer = aclmdlGetDatasetBuffer(g_npu_acl_model[model_index].output_dataset, 0);
+    if (score_buffer == TD_NULL) {
+        sample_svp_trace_err("get score buffer null.\n");
+    }
+    score = aclGetDataBufferAddr(score_buffer);
+    len_score = aclGetDataBufferSizeV2(score_buffer);  // size of bytes
+
+    // bbox
+    bbox_buffer = aclmdlGetDatasetBuffer(g_npu_acl_model[model_index].output_dataset, 1);
+    if (bbox_buffer == TD_NULL) {
+        sample_svp_trace_err("get bbox buffer null.\n");
+    }
+    bbox = aclGetDataBufferAddr(bbox_buffer);
+    len_bbox = aclGetDataBufferSizeV2(bbox_buffer);  // size of bytes
+
+    result_stmtrack(score, len_score/sizeof(float), bbox, len_bbox/sizeof(float), state);
+
+    sample_svp_trace_info("stmtrack output data success\n");
+    return;
+}
+
 
 
 td_void sample_npu_output_model_input_head(td_u32 model_index) {

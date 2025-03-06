@@ -44,9 +44,11 @@ pthread_t nnn_pid;
 pthread_t vodrawrc_pid;
 static int nnn_thd_run = 0;
 stYolovDetectObjs* pDrawInfo;
+stmTrackerState *stateInfo;
 static pthread_mutex_t algolock = PTHREAD_MUTEX_INITIALIZER;
 
 #define FEATURE_SORT 1
+#define MODEL_INPUT_SIZE 289 
 
 static sample_vo_cfg g_vo_cfg = {
     .vo_dev = SAMPLE_VO_DEV_UHD,
@@ -137,6 +139,26 @@ static td_void load_rgb(const char* filename, ot_svp_img* img) {
 }
 
 
+static td_void load_gray(const char* filename, ot_svp_img* img) {
+    FILE* fp = fopen(filename, "rb");
+    if (!fp) {
+        printf("Error: Failed to open file %s\n", filename);
+        return;
+    }
+
+    td_s32 size = img->width * img->height;
+    size_t read_bytes = fread((void*)img->virt_addr[0], 1, size, fp);
+    fclose(fp);
+
+    if (read_bytes != size) {
+        printf("Error: File size mismatch. expected %d bytes, got %zu bytes\n", size, read_bytes);
+    }
+    printf("load GRAY image from %s\n", filename);
+}
+
+
+
+
 static td_void sample_vi_get_default_vb_config(ot_size* size, ot_vb_cfg* vb_cfg, ot_vi_video_mode video_mode,
         td_u32 yuv_cnt, td_u32 raw_cnt) {
     ot_vb_calc_cfg calc_cfg;
@@ -206,10 +228,12 @@ static td_s32 sample_vio_start_vpss(ot_vpss_grp grp, ot_size* in_size) {
     ot_vpss_chn_attr chn_attrex[2];
     memcpy(&chn_attrex[0], &chn_attr, sizeof(chn_attr));
     memcpy(&chn_attrex[1], &chn_attr, sizeof(chn_attr));
-    chn_attrex[1].width = 640;
-    chn_attrex[1].height = 640;
+    // chn_attrex[1].width = 640;
+    // chn_attrex[1].height = 640;
     // chn_attrex[1].width = 1280;
     // chn_attrex[1].height = 1280;
+    chn_attrex[1].width = 800;
+    chn_attrex[1].height = 600;
     chn_attrex[1].compress_mode = OT_COMPRESS_MODE_NONE;
     chn_attrex[1].depth = 1;
 
@@ -283,67 +307,112 @@ long getms() {
     return ms;
 }
 
-int vgsdraw(ot_video_frame_info* pframe, stYolovDetectObjs* pOut) {
+// int vgsdraw(ot_video_frame_info* pframe, stYolovDetectObjs* pOut) {
+int vgsdraw(ot_video_frame_info* pframe, stmTrackerState* state) {
     td_s32 ret;
-    if (!pOut && pOut->id_count <= 0) {
-        return -1;
-    }
+    // if (!pOut && pOut->id_count <= 0) {
+    //     return -1;
+    // }
     ot_vgs_handle h_handle = -1;
     ot_vgs_task_attr vgs_task_attr = { 0 };
     static ot_vgs_line stLines[OBJDETECTMAX];
-    int thick = 2;
+    int thick = 8;
     int color = 0x00FF00;
     int colors[7] = { 0x0000ff,0x00FF00,0xff0000,0x00FFff,0xffFF00,0x000000,0xffffff };
 
     int linecount = 0;
-    for (int i = 0; i < pOut->id_count; i++) {
-        int xs = pOut->id_objs[i].x & 0xFFFE;
-        int ys = pOut->id_objs[i].y & 0xFFFE;
-        int xe = (pOut->id_objs[i].x + pOut->id_objs[i].w) & 0xFFFE;
-        int ye = (pOut->id_objs[i].y + pOut->id_objs[i].h) & 0xFFFE;
-        if (pOut->id_objs[i].w < 0 || pOut->id_objs[i].w > pframe->video_frame.width) {
-            continue;
-        }
-        if (pOut->id_objs[i].h < 0 || pOut->id_objs[i].h >  pframe->video_frame.height) {
-            continue;
-        }
-        color = colors[pOut->id_objs[i].id % 7];
-        // 上方的线条
-        stLines[linecount].color = color;
-        stLines[linecount].thick = thick;
-        stLines[linecount].start_point.x = xs;
-        stLines[linecount].start_point.y = ys;
-        stLines[linecount].end_point.x = xe;
-        stLines[linecount].end_point.y = ys;
-        linecount++;
 
-        // 左边的线条
-        stLines[linecount].color = color;
-        stLines[linecount].thick = thick;
-        stLines[linecount].start_point.x = xs;
-        stLines[linecount].start_point.y = ys;
-        stLines[linecount].end_point.x = xs;
-        stLines[linecount].end_point.y = ye;
-        linecount++;
 
-        // 右边线条
-        stLines[linecount].color = color;
-        stLines[linecount].thick = thick;
-        stLines[linecount].start_point.x = xe;
-        stLines[linecount].start_point.y = ys;
-        stLines[linecount].end_point.x = xe;
-        stLines[linecount].end_point.y = ye;
-        linecount++;
 
-        // 下边线条
-        stLines[linecount].color = color;
-        stLines[linecount].thick = thick;
-        stLines[linecount].start_point.x = xs;
-        stLines[linecount].start_point.y = ye;
-        stLines[linecount].end_point.x = xe;
-        stLines[linecount].end_point.y = ye;
-        linecount++;
-    }
+    int xs = (int)(state->cx - state->w * 0.5) & 0xFFFE;
+    int ys = (int)(state->cy - state->h * 0.5) & 0xFFFE;
+    int xe = (int)(state->cx + state->w * 0.5) & 0xFFFE;
+    int ye = (int)(state->cy + state->h * 0.5) & 0xFFFE;
+
+    // 上方的线条
+    stLines[linecount].color = color;
+    stLines[linecount].thick = thick;
+    stLines[linecount].start_point.x = xs;
+    stLines[linecount].start_point.y = ys;
+    stLines[linecount].end_point.x = xe;
+    stLines[linecount].end_point.y = ys;
+    linecount++;
+
+    // 左边的线条
+    stLines[linecount].color = color;
+    stLines[linecount].thick = thick;
+    stLines[linecount].start_point.x = xs;
+    stLines[linecount].start_point.y = ys;
+    stLines[linecount].end_point.x = xs;
+    stLines[linecount].end_point.y = ye;
+    linecount++;
+
+    // 右边线条
+    stLines[linecount].color = color;
+    stLines[linecount].thick = thick;
+    stLines[linecount].start_point.x = xe;
+    stLines[linecount].start_point.y = ys;
+    stLines[linecount].end_point.x = xe;
+    stLines[linecount].end_point.y = ye;
+    linecount++;
+
+    // 下边线条
+    stLines[linecount].color = color;
+    stLines[linecount].thick = thick;
+    stLines[linecount].start_point.x = xs;
+    stLines[linecount].start_point.y = ye;
+    stLines[linecount].end_point.x = xe;
+    stLines[linecount].end_point.y = ye;
+    linecount++;
+    
+    // for (int i = 0; i < pOut->id_count; i++) {
+    //     int xs = pOut->id_objs[i].x & 0xFFFE;
+    //     int ys = pOut->id_objs[i].y & 0xFFFE;
+    //     int xe = (pOut->id_objs[i].x + pOut->id_objs[i].w) & 0xFFFE;
+    //     int ye = (pOut->id_objs[i].y + pOut->id_objs[i].h) & 0xFFFE;
+    //     if (pOut->id_objs[i].w < 0 || pOut->id_objs[i].w > pframe->video_frame.width) {
+    //         continue;
+    //     }
+    //     if (pOut->id_objs[i].h < 0 || pOut->id_objs[i].h >  pframe->video_frame.height) {
+    //         continue;
+    //     }
+    //     color = colors[pOut->id_objs[i].id % 7];
+    //     // 上方的线条
+    //     stLines[linecount].color = color;
+    //     stLines[linecount].thick = thick;
+    //     stLines[linecount].start_point.x = xs;
+    //     stLines[linecount].start_point.y = ys;
+    //     stLines[linecount].end_point.x = xe;
+    //     stLines[linecount].end_point.y = ys;
+    //     linecount++;
+
+    //     // 左边的线条
+    //     stLines[linecount].color = color;
+    //     stLines[linecount].thick = thick;
+    //     stLines[linecount].start_point.x = xs;
+    //     stLines[linecount].start_point.y = ys;
+    //     stLines[linecount].end_point.x = xs;
+    //     stLines[linecount].end_point.y = ye;
+    //     linecount++;
+
+    //     // 右边线条
+    //     stLines[linecount].color = color;
+    //     stLines[linecount].thick = thick;
+    //     stLines[linecount].start_point.x = xe;
+    //     stLines[linecount].start_point.y = ys;
+    //     stLines[linecount].end_point.x = xe;
+    //     stLines[linecount].end_point.y = ye;
+    //     linecount++;
+
+    //     // 下边线条
+    //     stLines[linecount].color = color;
+    //     stLines[linecount].thick = thick;
+    //     stLines[linecount].start_point.x = xs;
+    //     stLines[linecount].start_point.y = ye;
+    //     stLines[linecount].end_point.x = xe;
+    //     stLines[linecount].end_point.y = ye;
+    //     linecount++;
+    // }
 
     if (linecount <= 0) {
         return -1;
@@ -437,7 +506,6 @@ static td_s32 framecpy(ot_svp_dst_img* dstf,
 
 static td_s32 frame_crop(ot_svp_dst_img* dstf, ot_video_frame_info* srcf, 
     td_s32 x_crop, td_s32 y_crop) {
-    
     td_s32 ret = OT_ERR_IVE_NULL_PTR;
     ot_ive_handle handle;
     ot_svp_dst_data dst_data;
@@ -447,30 +515,31 @@ static td_s32 frame_crop(ot_svp_dst_img* dstf, ot_video_frame_info* srcf,
     // ot_ive_dma_ctrl ctrl = { OT_IVE_DMA_MODE_INTERVAL_COPY, 0, 0, 0, 0}; // enables resizing
     ot_ive_dma_ctrl ctrl = { OT_IVE_DMA_MODE_DIRECT_COPY, 0, 0, 0, 0}; 
 
-    // adjust crop parameters to be even
-    x_crop &= ~1;
-    y_crop &= ~1;
-    td_s32 w_crop = dstf->width;
-    td_s32 h_crop = dstf->height;
-    // printf("crop params: x=%d, y=%d, w=%d, h=%d\n", x_crop, y_crop, w_crop, h_crop);
-    // printf("srcf->video_frame.stride[0] = %d\n", srcf->video_frame.stride[0]);
-    // printf("srcf->video_frame.stride[1] = %d\n", srcf->video_frame.stride[1]);
-    // printf("srcf->video_frame.width = %d\n", srcf->video_frame.width);
-    // printf("srcf->video_frame.height = %d\n", srcf->video_frame.height);
-    // printf("dstf->stride[0] = %d\n", dstf->stride[0]);
-    // printf("dstf->stride[1] = %d\n", dstf->stride[1]);
-    // printf("dstf->width = %d\n", dstf->width);
-    // printf("dstf->height = %d\n", dstf->height);
+    int w_crop = dstf->width;
+    int h_crop = dstf->height;
+    
+    // determine cropping range inside source frame
+    int src_x1 = x_crop >= 0 ? x_crop : 0;
+    int src_y1 = y_crop >= 0 ? y_crop : 0;
+    int src_x2 = x_crop + w_crop <= srcf->video_frame.width ? x_crop + w_crop : srcf->video_frame.width;
+    int src_y2 = y_crop + h_crop <= srcf->video_frame.height ? y_crop + h_crop : srcf->video_frame.height;
 
-    // copy & resize Y plane
-    src_data.phys_addr = srcf->video_frame.phys_addr[0] + y_crop * srcf->video_frame.stride[0] + x_crop;
-    src_data.width = w_crop;
-    src_data.height = h_crop;
+    int crop_w = src_x2 - src_x1;  // actual crop width
+    int crop_h = src_y2 - src_y1;  // actual crop height
+
+    // determine dst offset if crop starts out-of-bounds (black padding)
+    int dst_x = x_crop < 0 ? -x_crop : 0;
+    int dst_y = y_crop < 0 ? -y_crop : 0;
+
+    // copy Y plane
+    src_data.phys_addr = srcf->video_frame.phys_addr[0] + src_y1 * srcf->video_frame.stride[0] + src_x1;
+    src_data.width = crop_w;
+    src_data.height = crop_h;
     src_data.stride = srcf->video_frame.stride[0];
 
-    dst_data.phys_addr = dstf->phys_addr[0];
-    dst_data.width = dstf->width;
-    dst_data.height = dstf->height;
+    dst_data.phys_addr = dstf->phys_addr[0] + dst_y * dstf->stride[0] + dst_x;
+    dst_data.width = crop_w;
+    dst_data.height = crop_h;
     dst_data.stride = dstf->stride[0];
     
 
@@ -483,16 +552,16 @@ static td_s32 frame_crop(ot_svp_dst_img* dstf, ot_video_frame_info* srcf,
         ret = ss_mpi_ive_query(handle, &is_finish, is_block);
     }
 
-    // copy & resize UV plane
-    src_data.phys_addr = srcf->video_frame.phys_addr[1] + (y_crop / 2) * srcf->video_frame.stride[0] + x_crop;
-    src_data.width = w_crop;
-    src_data.height = h_crop / 2;
-    src_data.stride = srcf->video_frame.stride[0];
+    // copy UV plane
+    src_data.phys_addr = srcf->video_frame.phys_addr[1] + (src_y1 / 2) * srcf->video_frame.stride[1] + src_x1;
+    src_data.width = crop_w;
+    src_data.height = crop_h / 2;
+    src_data.stride = srcf->video_frame.stride[1];
 
     dst_data.phys_addr = dstf->phys_addr[1];
-    dst_data.width = dstf->width;
-    dst_data.height = dstf->height / 2;
-    dst_data.stride = dstf->stride[0];
+    dst_data.width = crop_w;
+    dst_data.height = crop_h / 2;
+    dst_data.stride = dstf->stride[1];
 
     ret = ss_mpi_ive_dma(&handle, &src_data, &dst_data, &ctrl, TD_TRUE);
     if (ret != TD_SUCCESS) return -1;
@@ -507,6 +576,52 @@ static td_s32 frame_crop(ot_svp_dst_img* dstf, ot_video_frame_info* srcf,
 }
 
 
+void setMemoryMask(ot_svp_img* img, int crop[4], stmTrackerState* state) {
+    // sanity check
+    if (img->width != MODEL_INPUT_SIZE || img->height != MODEL_INPUT_SIZE || img->type != OT_SVP_IMG_TYPE_U8C1) {
+        printf("Error: image size/type mismatch in setMemoryMask()\n");
+        return;
+    }
+
+    // get crop position in original frame
+    int crop_x = crop[0];
+    int crop_y = crop[1];
+
+    // compute target box position inside crop (original scale)
+    float target_x_in_crop = state->cx - crop_x;
+    float target_y_in_crop = state->cy - crop_y;
+
+    // scale target box into 289*289
+    float scale = state->scale; // this is search_size / 289, already provided
+    float scaled_w = state->w / scale;
+    float scaled_h = state->h / scale;
+    float scaled_cx = target_x_in_crop / scale;
+    float scaled_cy = target_y_in_crop / scale;
+
+    // top-left and bottom-right corners in the 289*289 mask
+    int x1 = (int)(scaled_cx - scaled_w * 0.5);
+    int y1 = (int)(scaled_cy - scaled_h * 0.5);
+    int x2 = (int)(scaled_cx + scaled_w * 0.5);
+    int y2 = (int)(scaled_cy + scaled_h * 0.5);
+
+    // clip to mask boundaries(just for safety)
+    if (x1 < 0) x1 = 0;
+    if (y1 < 0) y1 = 0;
+    if (x2 >= MODEL_INPUT_SIZE) x2 = MODEL_INPUT_SIZE - 1;
+    if (y2 >= MODEL_INPUT_SIZE) y2 = MODEL_INPUT_SIZE - 1;
+
+    // clear whole mask to backgournd(0)
+    memset((void*)img->virt_addr[0], 0, MODEL_INPUT_SIZE * MODEL_INPUT_SIZE);
+
+    // set target area to foreground(1)
+    for (int y = y1; y <= y2; y++) {
+        for (int x = x1; x <= x2; x++) {
+            ((td_u8*)img->virt_addr[0])[y * MODEL_INPUT_SIZE + x] = 1;
+        }
+    }
+}
+
+
 td_s32 frame_YUV420SP2RGB(ot_svp_img* srcYUV, ot_svp_img* dstRGB) {
     td_s32 ret;
     ot_ive_handle handle;
@@ -516,7 +631,7 @@ td_s32 frame_YUV420SP2RGB(ot_svp_img* srcYUV, ot_svp_img* dstRGB) {
     csc_ctrl.mode = OT_IVE_CSC_MODE_PIC_BT709_YUV_TO_RGB;
 
     ret = ss_mpi_ive_csc(&handle, (const ot_svp_src_img*)srcYUV, (const ot_svp_dst_img*)dstRGB, 
-                          (const ot_ive_csc_ctrl*)&csc_ctrl, TD_TRUE);
+                          (const ot_ive_csc_ctrl*)&csc_ctrl, TD_TRUE);  // require resolution as the multiple of 16
     if (ret != TD_SUCCESS) {
         printf("Error: YUV420SP to RGB conversion failed!\n");
         return ret;
@@ -616,8 +731,6 @@ td_s32 frame_resize(ot_svp_img* srcRGB, ot_svp_img* dstRGB) {
 // }
 
 ot_vb_blk CreateYUV420SPFrame(ot_svp_img* img, td_s32 w, td_s32 h) {
-    w &= ~1; // make w even
-    h &= ~1; // make h even
 
     // calculate required memory size for YUV420SP
     td_s32 vbsize = w * h * 3 / 2;
@@ -644,13 +757,18 @@ ot_vb_blk CreateYUV420SPFrame(ot_svp_img* img, td_s32 w, td_s32 h) {
         return OT_VB_INVALID_HANDLE;
     }
     img->virt_addr[1] = img->virt_addr[0] + w * h;
+
+    // zero init
+    memset((void*)img->virt_addr[0], 0, vbsize);  
+
+    // set metadata
     img->stride[0] = w;
     img->stride[1] = w;
     img->width = w;
     img->height = h;
     img->type = OT_SVP_IMG_TYPE_YUV420SP;
 
-    printf("YUV frame: w=%d, h=%d, stride[0]=%d, stride[1]=%d\n", img->width, img->height, img->stride[0], img->stride[1]);
+    printf("create YUV frame: w=%d, h=%d, stride[0]=%d, stride[1]=%d\n", img->width, img->height, img->stride[0], img->stride[1]);
 
     return vb_blk; // return allocated block
 }
@@ -699,7 +817,7 @@ ot_vb_blk CreateRGBFrame(ot_svp_img* img, td_s32 w, td_s32 h) {
     img->height = h;
     img->type = OT_SVP_IMG_TYPE_U8C3_PLANAR;
 
-    printf("RGB frame: w=%d, h=%d, stride[0]=%d, stride[1]=%d, stride[2]=%d\n", 
+    printf("create RGB frame: w=%d, h=%d, stride[0]=%d, stride[1]=%d, stride[2]=%d\n", 
             img->width, img->height, img->stride[0], img->stride[1], img->stride[2]);
 
     return vb_blk; // return allocated block
@@ -743,7 +861,7 @@ ot_vb_blk CreateGrayFrame(ot_svp_img* img, td_s32 w, td_s32 h) {
     img->height = h;
     img->type = OT_SVP_IMG_TYPE_U8C1;
 
-    printf("Gray frame: w=%d, h=%d, stride[0]=%d\n", 
+    printf("create Gray frame: w=%d, h=%d, stride[0]=%d\n", 
             img->width, img->height, img->stride[0]);
 
     return vb_blk; // return allocated block
@@ -763,40 +881,80 @@ void* sample_drawrec_proc(void* parg) {
     param.sched_priority = sched_get_priority_min(policy);
     pthread_setschedparam(pthread_self(), policy, &param);
 
-    stYolovDetectObjs* pOut = (stYolovDetectObjs*)malloc(sizeof(stYolovDetectObjs));
+    // stYolovDetectObjs* pOut = (stYolovDetectObjs*)malloc(sizeof(stYolovDetectObjs));
+    stmTrackerState* state = (stmTrackerState*)malloc(sizeof(stmTrackerState));
     while (nnn_thd_run) {
         ret = ss_mpi_vpss_get_chn_frame(grp, chn, &frame_info, milli_sec);
         if (ret != TD_SUCCESS) {
             continue;
         }
         pthread_mutex_lock(&algolock);
-        memcpy(pOut, pDrawInfo, sizeof(stYolovDetectObjs));
+        memcpy(state, stateInfo, sizeof(stmTrackerState));
         pthread_mutex_unlock(&algolock);
 
-        float scale_x = 4000.0f / 640.0f;
-        float scale_y = 3000.0f / 640.0f;
-        for (size_t i = 0; i < pOut->count; i++) {
-            pOut->objs[i].x = scale_x * pOut->objs[i].x;
-            pOut->objs[i].y = scale_y * pOut->objs[i].y;
-            pOut->objs[i].w = scale_x * pOut->objs[i].w;
-            pOut->objs[i].h = scale_y * pOut->objs[i].h;
-        }
-        for (size_t i = 0; i < pOut->id_count; i++) {
-            pOut->id_objs[i].x = scale_x * pOut->id_objs[i].x;
-            pOut->id_objs[i].y = scale_y * pOut->id_objs[i].y;
-            pOut->id_objs[i].w = scale_x * pOut->id_objs[i].w;
-            pOut->id_objs[i].h = scale_y * pOut->id_objs[i].h;
-            // printf("[%d] %d %d %d %d\n", i, pOut->id_objs[i].x, pOut->id_objs[i].y, pOut->id_objs[i].w, pOut->id_objs[i].h);
-        }
-        vgsdraw(&frame_info, pOut);
-        DrawOsdInfo(pOut);
+        float scale_x = 4000.0f / 800.0f;
+        float scale_y = 3000.0f / 600.0f;
+        // for (size_t i = 0; i < pOut->count; i++) {
+        //     pOut->objs[i].x = scale_x * pOut->objs[i].x;
+        //     pOut->objs[i].y = scale_y * pOut->objs[i].y;
+        //     pOut->objs[i].w = scale_x * pOut->objs[i].w;
+        //     pOut->objs[i].h = scale_y * pOut->objs[i].h;
+        // }
+        // for (size_t i = 0; i < pOut->id_count; i++) {
+        //     pOut->id_objs[i].x = scale_x * pOut->id_objs[i].x;
+        //     pOut->id_objs[i].y = scale_y * pOut->id_objs[i].y;
+        //     pOut->id_objs[i].w = scale_x * pOut->id_objs[i].w;
+        //     pOut->id_objs[i].h = scale_y * pOut->id_objs[i].h;
+        //     // printf("[%d] %d %d %d %d\n", i, pOut->id_objs[i].x, pOut->id_objs[i].y, pOut->id_objs[i].w, pOut->id_objs[i].h);
+        // }
+        state->cx = state->cx * scale_x;
+        state->cy = state->cy * scale_y;
+        state->w = state->w * scale_x;
+        state->h = state->h * scale_y;
+
+        // vgsdraw(&frame_info, pOut);
+        // DrawOsdInfo(pOut);
+        vgsdraw(&frame_info, state);
+        // DrawOsdInfo(state);
         ret = ss_mpi_vo_send_frame(0, 1, &frame_info, milli_sec);
         ss_mpi_vpss_release_chn_frame(grp, chn, &frame_info);
 
     }
-    free(pOut);
+    // free(pOut);
+    free(state);
     return NULL;
 }
+
+
+int next_multiple_of_16(int x) {
+    return ((x / 16) + 1) * 16;
+}
+
+
+void stmtrack_get_crop(stmTrackerState* state, float search_area_factor, int crop[4]) {
+    // 4 times bigger (Todd Howard^_^)
+    float search_size = search_area_factor * sqrtf(state->w * state->h);
+
+    // ensure size is a multiple of 16
+    printf("debug fuxk my ass before: %f\n", search_size);
+    search_size = (float)next_multiple_of_16((int)search_size);
+    printf("debug fuxk my ass after: %f\n", search_size);
+
+    // update state scale
+    state->scale = search_size / MODEL_INPUT_SIZE;
+
+    // calculate crop rectangle
+    crop[0] = (int)(state->cx - search_size * 0.5f);  // crop x
+    crop[1] = (int)(state->cy - search_size * 0.5f);  // crop y
+    crop[2] = (int)search_size;  // crop w
+    crop[3] = (int)search_size;  // crop h
+
+    // force crop x to be even since crop on YUV420SP
+    crop[0] &= ~1;
+}
+
+
+
 
 void* sample_nnnn_proc(void* parg) {
     ot_vpss_grp grp = 0;
@@ -819,16 +977,25 @@ void* sample_nnnn_proc(void* parg) {
     param.sched_priority = sched_get_priority_max(policy);
     pthread_setschedparam(pthread_self(), policy, &param);
 
-    stYolovDetectObjs* pOut = (stYolovDetectObjs*)malloc(sizeof(stYolovDetectObjs));
-    ot_svp_img imgQuery;
-    ot_svp_img imgMemory;
-    ot_svp_img imgMask;
-    // CreateUsrFrame(&imgAlgo, 640, 640);
-    // CreateUsrFrame(&imgAlgo, 640, 640);
+    // stYolovDetectObjs* pOut = (stYolovDetectObjs*)malloc(sizeof(stYolovDetectObjs));
+    stmTrackerState *state = (stmTrackerState*)malloc(sizeof(stmTrackerState));
+
+    // init state
+    state->cx = 459.0f;
+    state->cy = 410.0f;
+    state->w = 68.0f;
+    state->h = 122.0f;
+    state->scale = 1.0f;
+
+    // init image required for object tracing
+    ot_svp_img imgQuery;  // for query model input
+    ot_svp_img imgMemory;  // for memory model input
+    ot_svp_img imgMask;  // for memory mask input
     
-    ot_vb_blk vb_blk_query = CreateRGBFrame(&imgQuery, 289, 289); // for query model input
-    ot_vb_blk vb_blk_memory = CreateRGBFrame(&imgMemory, 289, 289);  // for memory model input
-    ot_vb_blk vb_blk_mask = CreateGrayFrame(&imgMask, 289, 289);  // for memory mask input
+    // allocate images
+    ot_vb_blk vb_blk_query = CreateRGBFrame(&imgQuery, MODEL_INPUT_SIZE, MODEL_INPUT_SIZE); 
+    ot_vb_blk vb_blk_memory = CreateRGBFrame(&imgMemory, MODEL_INPUT_SIZE, MODEL_INPUT_SIZE);  
+    ot_vb_blk vb_blk_mask = CreateGrayFrame(&imgMask, MODEL_INPUT_SIZE, MODEL_INPUT_SIZE);  
 
 
     size_t imgQuerySize = imgQuery.width * imgQuery.height * 3;  // bytes for uint8 input
@@ -837,13 +1004,23 @@ void* sample_nnnn_proc(void* parg) {
 
 
     // debug consistence
-    const char* filename = "resize_output289_standard.rgb";
-    load_rgb(filename, &imgMemory);
-    printf("load rgb to memory image\n");
+    // const char* filenameQuery = "im_q_crop.rgb";
+    // load_rgb(filenameQuery, &imgQuery);
+    // printf("load rgb to query image\n");
+
+    // const char* filenameMemory = "im_m_crop.rgb";
+    // load_rgb(filenameMemory, &imgMemory);
+    // printf("load rgb to memory image\n");
+    
+    // const char* filenameMask = "mask.gray";
+    // load_gray(filenameMask, &imgMask);
+    // printf("load gray to mask image\n");
 
     int fps = 0;
-    long prems = getms();
+    long time_prems = getms();
 
+    float search_area_factor = 4.0f;
+    int frame_id = 0;
     while (nnn_thd_run) {
         ret = ss_mpi_vpss_get_chn_frame(grp, chn, &frame_info, milli_sec);
         if (ret != TD_SUCCESS) {
@@ -851,37 +1028,48 @@ void* sample_nnnn_proc(void* parg) {
         }
         
         
-        long start = getms();
-        // framecpy(&imgAlgo, &frame_info);
-
+        long time_start = getms();
         // ==================crop====================
-        td_s32 crop_x = 160;
-        td_s32 crop_y = 160;
-        td_s32 crop_w = 480;
-        td_s32 crop_h = 480;
+        int crop[4] = {0};  // xywh
+        stmtrack_get_crop(state, search_area_factor, crop);
+        // crop[0] = 0;
+        // crop[1] = 0;
+        // crop[2] = 800;
+        // crop[3] = 600;
         ot_svp_img imgCrop;
-        ot_vb_blk vb_blk_crop = CreateYUV420SPFrame(&imgCrop, crop_w, crop_h); // for crop
-        // frame_crop(&imgCrop, &frame_info, crop_x, crop_y);
-        // printf("cropp done\n");
+        ot_vb_blk vb_blk_crop = CreateYUV420SPFrame(&imgCrop, crop[2], crop[3]); // allocate image for crop
+        frame_crop(&imgCrop, &frame_info, crop[0], crop[1]);
+        long time_crop = getms();
+        printf("crop done, time: %ld ms\n", time_crop - time_start);
         
 
         // ==================color conversion====================
         ot_svp_img imgRGB;
         ot_vb_blk vb_blk_rgb = CreateRGBFrame(&imgRGB, imgCrop.width, imgCrop.height); 
-        // frame_YUV420SP2RGB(&imgCrop, &imgRGB);
-        // printf("color conversion done\n");
+        frame_YUV420SP2RGB(&imgCrop, &imgRGB);
+        long time_color_conversion = getms();
+        printf("color conversion(YUV420SP->RGB) done, time: %ld ms\n", time_color_conversion - time_crop);
 
         //===================resize=====================
         // frame_resize(&imgRGB, &imgAlgo);
-        // resizeRGBBuffer(imgRGB.virt_addr[0], imgRGB.width, imgRGB.height,
-                        // imgAlgo.virt_addr[0], imgAlgo.width, imgAlgo.height);
-        // printf("resizing done\n");
+        resizeRGBBuffer(imgRGB.virt_addr[0], imgRGB.width, imgRGB.height,
+                        imgMemory.virt_addr[0], imgMemory.width, imgMemory.height);
+        resizeRGBBuffer(imgRGB.virt_addr[0], imgRGB.width, imgRGB.height,
+                        imgQuery.virt_addr[0], imgQuery.width, imgQuery.height);
+        long time_resize = getms();
+        printf("resizing done, time: %ld ms\n", time_resize - time_color_conversion);
+
+        // set mask
+        setMemoryMask(&imgMask, crop, state);
+        long time_set_mask = getms();
+        printf("mask setting done, time: %ld ms\n", time_set_mask - time_resize);
+
 
         // save_yuv420sp("crop_output.yuv", &imgCrop); 
         // save_rgb("crop_output.rgb", &imgRGB);
-        save_rgb("resize_query.rgb", &imgQuery);
-        save_rgb("resize_memory.rgb", &imgMemory);
-        save_gray("resize_mask.gray", &imgMask);
+        // // save_rgb("query_save.rgb", &imgQuery);
+        // save_rgb("memory_save.rgb", &imgMemory);
+        // save_gray("mask_save.gray", &imgMask);
 
 
         // nnn_execute((td_void*)imgAlgo.virt_addr[0], framelen, pOut);
@@ -891,8 +1079,16 @@ void* sample_nnnn_proc(void* parg) {
 
         stmtrack_execute((td_void*)imgQuery.virt_addr[0], imgQuerySize,
                          (td_void*)imgMemory.virt_addr[0], imgMemorySize, 
-                         (td_void*)imgMask.virt_addr[0], imgMaskSize);
-        long nnntm = getms();
+                         (td_void*)imgMask.virt_addr[0], imgMaskSize, state);
+        
+        long time_model_execution= getms();
+
+        printf("model execution done, time: %ld ms\n", time_model_execution - time_set_mask);
+        printf("tracking result\n");
+        printf("cx: %.2f, cy: %.2f, w: %.2f, h: %.2f, score: %.2f\n", state->cx, state->cy, state->w, state->h, state->score);
+        long time_end= getms();
+        printf("===total time consumed: %ld ms==\n", time_end - time_start);
+        
 #ifdef FEATURE_SORT
         // get_boundbox_features(imgAlgo.virt_addr[0], framelen, pOut);
         // track_deepsort(pOut);
@@ -907,6 +1103,12 @@ void* sample_nnnn_proc(void* parg) {
 
         // write result 
         pthread_mutex_lock(&algolock);
+        stateInfo->cx = state->cx;
+        stateInfo->cy = state->cy;
+        stateInfo->w = state->w;
+        stateInfo->h = state->h;
+        stateInfo->score = state->score;
+
         // pDrawInfo->count = 0;
         // pDrawInfo->id_count = 0;
         // for (size_t i = 0; i < pOut->count; i++) {
@@ -927,20 +1129,23 @@ void* sample_nnnn_proc(void* parg) {
         // pDrawInfo->id_count = pOut->id_count;
         pthread_mutex_unlock(&algolock);
 
-        long deepsort = getms();
-        printf("execution time: %ld(nnn:%ld,deepsort:%ld) ms \n", getms() - start, nnntm - start, deepsort - nnntm);
+
+        
 
         ss_mpi_vpss_release_chn_frame(grp, chn, &frame_info);
+
         fps++;
-        if (start - prems >= 1000) {
-            prems = start;
+        if (time_start - time_prems >= 1000) {
+            time_prems = time_start;
             printf("=====================================================  nnn  %d fps\n", fps);
             fps = 0;
         }
-        nnn_thd_run = 0;  // debug
+        frame_id++;
+        // nnn_thd_run = 0;  // debug
+        
     }
-    if (pOut) {
-        free(pOut);
+    if (state) {
+        free(state);
     }
     // release of query, memory and mask
     ss_mpi_sys_munmap(imgQuery.virt_addr[0], imgQuery.width * imgQuery.height * 3);
@@ -953,6 +1158,9 @@ void* sample_nnnn_proc(void* parg) {
     printf("%s %d\n", __FUNCTION__, __LINE__);
     return NULL;
 }
+
+
+
 
 static td_s32 sample_vio_second_sensor(td_void) {
     td_s32 ret;
@@ -1017,6 +1225,8 @@ static td_s32 sample_vio_second_sensor(td_void) {
     nnn_thd_run = 1;
     pDrawInfo = (stYolovDetectObjs*)malloc(sizeof(stYolovDetectObjs));
     pDrawInfo->count = 0;
+
+    stateInfo = (stmTrackerState*)malloc(sizeof(stmTrackerState));
     pthread_create(&nnn_pid, 0, sample_nnnn_proc, NULL);
     pthread_create(&vodrawrc_pid, 0, sample_drawrec_proc, NULL);
     UiAppMain();
@@ -1027,6 +1237,7 @@ static td_s32 sample_vio_second_sensor(td_void) {
     pthread_join(nnn_pid, 0);
     pthread_join(vodrawrc_pid, 0);
     free(pDrawInfo);
+    free(stateInfo);
 
     sample_vio_stop_venc_and_vo(vpss_grp, grp_num);
 
@@ -1085,8 +1296,9 @@ static td_s32 sample_vio_all(td_void) {
     nnn_thd_run = 1;
     pDrawInfo = (stYolovDetectObjs*)malloc(sizeof(stYolovDetectObjs));
     pDrawInfo->count = 0;
+    stateInfo = (stmTrackerState*)malloc(sizeof(stmTrackerState));
     pthread_create(&nnn_pid, 0, sample_nnnn_proc, NULL);
-    // pthread_create(&vodrawrc_pid, 0, sample_drawrec_proc, NULL);
+    pthread_create(&vodrawrc_pid, 0, sample_drawrec_proc, NULL);
     UiAppMain();
 
     sample_get_char();
@@ -1095,6 +1307,7 @@ static td_s32 sample_vio_all(td_void) {
     pthread_join(nnn_pid, 0);
     // pthread_join(vodrawrc_pid, 0);
     free(pDrawInfo);
+    free(stateInfo);
 
     sample_vio_stop_venc_and_vo(vpss_grp, grp_num);
 
