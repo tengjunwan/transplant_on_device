@@ -99,7 +99,8 @@ td_s32 stmtrack_prepare_init_resources()
 
     // ===================load models==================
     // load query model
-    const char *om_model_path_query = "STMTrack_FeatureExtractionQuery.om";  
+    // const char *om_model_path_query = "STMTrack_FeatureExtractionQuery.om";  
+    const char *om_model_path_query = "stmtrack_query_deploy_model.om";  
     printf("start loading model: %s\n", om_model_path_query);  
     ret = sample_svp_npu_load_model(om_model_path_query, 0, TD_FALSE); // load model, create model desc; model index = '0'
     if (ret != TD_SUCCESS) {
@@ -108,7 +109,8 @@ td_s32 stmtrack_prepare_init_resources()
     }
 
     // load memory model
-    const char *om_model_path_memory = "STMTrack_FeatureExtractionMemory.om";  
+    // const char *om_model_path_memory = "STMTrack_FeatureExtractionMemory.om";  
+    const char *om_model_path_memory = "stmtrack_memory_deploy_model.om";  
     printf("start loading model: %s\n", om_model_path_memory);  
     ret = sample_svp_npu_load_model(om_model_path_memory, 1, TD_FALSE);  // model index = '1'
     if (ret != TD_SUCCESS) {
@@ -117,7 +119,8 @@ td_s32 stmtrack_prepare_init_resources()
     }
 
     // load readMemoryAndHead model
-    const char *om_model_path_readMemoryAndHead = "STMTrack_ReadMemoryAndHead.om";  
+    // const char *om_model_path_readMemoryAndHead = "STMTrack_ReadMemoryAndHead.om";  
+    const char *om_model_path_readMemoryAndHead = "stmtrack_head_deploy_model.om";  
     // const char *om_model_path_readMemoryAndHead = "STMTrack_FeatureExtractionMemory.om";  
     printf("start loading model: %s\n", om_model_path_readMemoryAndHead);  
     ret = sample_svp_npu_load_model(om_model_path_readMemoryAndHead, 2, TD_FALSE); // model index = '2'
@@ -146,6 +149,8 @@ td_s32 stmtrack_execute(td_void* query_buf, size_t query_len, td_void* memory_bu
     // model_index=1: memory model
     // model_index=2: readMemoryAndHead model
     td_s32 ret;
+
+    long time_m_start = getms();
     // prepare dataset
     for (td_u32 i = 0; i < 3; i++) {
         ret = sample_svp_npu_dataset_prepare_init(i); // create input dataset(no input data buffer allocated or created) 
@@ -165,6 +170,8 @@ td_s32 stmtrack_execute(td_void* query_buf, size_t query_len, td_void* memory_bu
         sample_svp_trace_err("memory memcpy_s device buffer fail.\n");
         return -1;
     }
+    long time_m_prepare = getms();
+    printf("prepare time: %ld ms\n", time_m_prepare - time_m_start);
     
     // run query model
     ret = sample_npu_model_execute(0);
@@ -174,6 +181,9 @@ td_s32 stmtrack_execute(td_void* query_buf, size_t query_len, td_void* memory_bu
     }
     printf("query model inference done;\n");
 
+    long time_m_query = getms();
+    printf("query time: %ld ms\n", time_m_query - time_m_prepare);
+
     // run memory model
     ret = sample_npu_model_execute(1);
     if (ret != TD_SUCCESS) {
@@ -181,6 +191,9 @@ td_s32 stmtrack_execute(td_void* query_buf, size_t query_len, td_void* memory_bu
         return -1;
     }
     printf("memory model inference done;\n");
+
+    long time_m_memory = getms();
+    printf("memory time: %ld ms\n", time_m_memory - time_m_query);
 
     // link output databuffer of query & memory model to inputdataset of readMemoryAndHead
     sample_npu_model_link_buffer(0, 1, 2); 
@@ -194,6 +207,9 @@ td_s32 stmtrack_execute(td_void* query_buf, size_t query_len, td_void* memory_bu
         return -1;
     }
     printf("readMemoryAndHead model inference done;\n");
+
+    long time_m_head = getms();
+    printf("head time: %ld ms\n", time_m_head - time_m_memory);
     // output final output
     // sample_npu_output_model_result_memory(model_index);
 
@@ -205,6 +221,8 @@ td_s32 stmtrack_execute(td_void* query_buf, size_t query_len, td_void* memory_bu
 
     // load model output
     sample_npu_output_model_result_head(2, state);
+    long time_m_post = getms();
+    printf("post-process time: %ld ms\n", time_m_post - time_m_head);
 
     // sample_npu_output_model_result(0, pOut);
     // destroy all datasets and databuffers for all models
@@ -212,6 +230,8 @@ td_s32 stmtrack_execute(td_void* query_buf, size_t query_len, td_void* memory_bu
         sample_npu_destroy_output(i); // release output databuffer and destory output dataset
         sample_npu_destroy_input_dataset(i); // only destroy input dataset
     }
+    long time_m_destroy = getms();
+    printf("destroy time: %ld ms\n", time_m_destroy - time_m_post);
     
     return 0;
 }

@@ -279,3 +279,31 @@ void DrawOsdInfo(stYolovDetectObjs *pOut) {
   labcount = pOut->id_count;
   pthread_mutex_unlock(&Uilock);
 }
+
+
+void DrawTrackerStateOsd(stmTrackerState *state) {
+    pthread_mutex_lock(&Uilock);
+
+    // Clear previous label (only 1 label needed for 1 tracker state)
+    if (labcount > 0) {
+        lv_obj_del(stPages.label[0]);
+        labcount = 0;
+    }
+
+    // Create new label for the score
+    stPages.label[0] = lv_label_create(lv_scr_act());
+    lv_label_set_text_fmt(stPages.label[0], "Score: %.2f", state->score);
+
+    // Align label near the top-left corner of the bounding box
+    lv_obj_align(stPages.label[0], LV_ALIGN_TOP_LEFT,
+                 (int)(state->cx - state->w * 0.5f),
+                 (int)(state->cy - state->h * 0.5f) - 20);  // 20 pixels above box
+
+    // Set font and color (adjust as needed)
+    lv_obj_set_style_text_font(stPages.label[0], &lv_font_simsun_16, 0);
+    lv_obj_set_style_text_color(stPages.label[0], lv_color_make(0x00, 0xFF, 0x00), 0);
+
+    labcount = 1;  // Only 1 tracker state, so only 1 label
+
+    pthread_mutex_unlock(&Uilock);
+}

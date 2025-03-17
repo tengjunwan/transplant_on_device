@@ -21,7 +21,12 @@
 #include "sample_common_svp.h"
 #include "sample_npu_model.h"
 
+typedef struct {
+    aclDataBuffer* databuffer;
+} memory_buffer;
+
 static npu_acl_model_t g_npu_acl_model[MAX_THREAD_NUM] = {0};
+static memory_buffer g_memory_buffer[1] = {0};
 
 
 // create datasets and databuffer just like "sample_npu_create_output"

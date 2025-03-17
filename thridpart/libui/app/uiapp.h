@@ -11,6 +11,7 @@ int UiAppMainStop();
 void CreateUi();
 void UiExit();
 void DrawOsdInfo(stYolovDetectObjs *pOut);
+void DrawTrackerStateOsd(stmTrackerState *state);
 #if __cplusplus
 }
 #endif

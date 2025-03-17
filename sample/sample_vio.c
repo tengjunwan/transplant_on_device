@@ -21,6 +21,7 @@
 #include "detectobjs.h"
 #include "uiapp.h"
 #include "wrapperDeepSort.h"
+#include "ot_common_vgs.h"
 
 static volatile sig_atomic_t g_sig_flag = 0;
 
@@ -49,6 +50,7 @@ static pthread_mutex_t algolock = PTHREAD_MUTEX_INITIALIZER;
 
 #define FEATURE_SORT 1
 #define MODEL_INPUT_SIZE 289 
+#define MODEL_FAKE_INPUT_SIZE 304 
 
 static sample_vo_cfg g_vo_cfg = {
     .vo_dev = SAMPLE_VO_DEV_UHD,
@@ -440,6 +442,78 @@ int vgsdraw(ot_video_frame_info* pframe, stmTrackerState* state) {
     }
 
     /* step5: start VGS work */
+    ret = ss_mpi_vgs_end_job(h_handle);
+    if (ret != TD_SUCCESS) {
+        ss_mpi_vgs_cancel_job(h_handle);
+        return TD_FAILURE;
+    }
+
+    return ret;
+}
+
+
+int vgsdrawV2(ot_video_frame_info* pframe, stmTrackerState* state) {
+    td_s32 ret;
+    ot_vgs_handle h_handle = -1;
+    ot_vgs_task_attr vgs_task_attr = { 0 };
+    static ot_vgs_line stLines[4]; // 1 box = 4 lines
+    int thick = 8;
+    int color = 0x00FF00; // Green
+
+    int xs = (int)(state->cx - state->w * 0.5f) & ~1; // align even
+    int ys = (int)(state->cy - state->h * 0.5f) & ~1;
+    int xe = (int)(state->cx + state->w * 0.5f) & ~1;
+    int ye = (int)(state->cy + state->h * 0.5f) & ~1;
+
+    // draw the 4 edges of the bounding box
+    stLines[0] = (ot_vgs_line){.color=color, .thick=thick, .start_point={xs, ys}, .end_point={xe, ys}}; // top
+    stLines[1] = (ot_vgs_line){.color=color, .thick=thick, .start_point={xs, ys}, .end_point={xs, ye}}; // left
+    stLines[2] = (ot_vgs_line){.color=color, .thick=thick, .start_point={xe, ys}, .end_point={xe, ye}}; // right
+    stLines[3] = (ot_vgs_line){.color=color, .thick=thick, .start_point={xs, ye}, .end_point={xe, ye}}; // bottom
+
+    ret = ss_mpi_vgs_begin_job(&h_handle);
+    if (ret != TD_SUCCESS) {
+        return TD_FAILURE;
+    }
+
+    if (memcpy_s(&vgs_task_attr.img_in, sizeof(ot_video_frame_info), pframe,
+        sizeof(ot_video_frame_info)) != EOK) {
+        return TD_FAILURE;
+    }
+
+    if (memcpy_s(&vgs_task_attr.img_out, sizeof(ot_video_frame_info), pframe,
+        sizeof(ot_video_frame_info)) != EOK) {
+        return TD_FAILURE;
+    }
+
+    // Draw the box
+    ret = ss_mpi_vgs_add_draw_line_task(h_handle, &vgs_task_attr, stLines, 4);
+    if (ret != TD_SUCCESS) {
+        ss_mpi_vgs_cancel_job(h_handle);
+        printf("ss_mpi_vgs_add_draw_line_task ret:%08X\n", ret);
+        return TD_FAILURE;
+    }
+
+    // === Draw the score text (top-left corner) ===
+    // char score_text[32];
+    // snprintf(score_text, sizeof(score_text), "%.2f", state->score);
+
+    // ot_vgs_draw_str_attr draw_str;
+    // draw_str.str = score_text;
+    // draw_str.start_pos.x = xs + 2;  // a bit of padding
+    // draw_str.start_pos.y = ys - 10; // slightly above the box
+    // draw_str.color = color;         // same color as box
+    // draw_str.font_size = 20;        // adjust based on your need
+
+    // ret = ss_mpi_vgs_add_draw_string_task(h_handle, &vgs_task_attr, &draw_str);
+    // if (ret != TD_SUCCESS) {
+    //     ss_mpi_vgs_cancel_job(h_handle);
+    //     printf("ss_mpi_vgs_add_draw_string_task failed: 0x%08X\n", ret);
+    //     return TD_FAILURE;
+    // }
+
+
+    // Complete the VGS job
     ret = ss_mpi_vgs_end_job(h_handle);
     if (ret != TD_SUCCESS) {
         ss_mpi_vgs_cancel_job(h_handle);
@@ -914,8 +988,8 @@ void* sample_drawrec_proc(void* parg) {
 
         // vgsdraw(&frame_info, pOut);
         // DrawOsdInfo(pOut);
-        vgsdraw(&frame_info, state);
-        // DrawOsdInfo(state);
+        vgsdrawV2(&frame_info, state);
+        // DrawTrackerStateOsd(state);
         ret = ss_mpi_vo_send_frame(0, 1, &frame_info, milli_sec);
         ss_mpi_vpss_release_chn_frame(grp, chn, &frame_info);
 
@@ -993,8 +1067,8 @@ void* sample_nnnn_proc(void* parg) {
     ot_svp_img imgMask;  // for memory mask input
     
     // allocate images
-    ot_vb_blk vb_blk_query = CreateRGBFrame(&imgQuery, MODEL_INPUT_SIZE, MODEL_INPUT_SIZE); 
-    ot_vb_blk vb_blk_memory = CreateRGBFrame(&imgMemory, MODEL_INPUT_SIZE, MODEL_INPUT_SIZE);  
+    ot_vb_blk vb_blk_query = CreateRGBFrame(&imgQuery, MODEL_FAKE_INPUT_SIZE, MODEL_FAKE_INPUT_SIZE); 
+    ot_vb_blk vb_blk_memory = CreateRGBFrame(&imgMemory, MODEL_FAKE_INPUT_SIZE, MODEL_FAKE_INPUT_SIZE);  
     ot_vb_blk vb_blk_mask = CreateGrayFrame(&imgMask, MODEL_INPUT_SIZE, MODEL_INPUT_SIZE);  
 
 
@@ -1021,6 +1095,7 @@ void* sample_nnnn_proc(void* parg) {
 
     float search_area_factor = 4.0f;
     int frame_id = 0;
+    td_bool is_init = TD_FALSE;
     while (nnn_thd_run) {
         ret = ss_mpi_vpss_get_chn_frame(grp, chn, &frame_info, milli_sec);
         if (ret != TD_SUCCESS) {
@@ -1051,16 +1126,24 @@ void* sample_nnnn_proc(void* parg) {
         printf("color conversion(YUV420SP->RGB) done, time: %ld ms\n", time_color_conversion - time_crop);
 
         //===================resize=====================
-        // frame_resize(&imgRGB, &imgAlgo);
-        resizeRGBBuffer(imgRGB.virt_addr[0], imgRGB.width, imgRGB.height,
-                        imgMemory.virt_addr[0], imgMemory.width, imgMemory.height);
-        resizeRGBBuffer(imgRGB.virt_addr[0], imgRGB.width, imgRGB.height,
-                        imgQuery.virt_addr[0], imgQuery.width, imgQuery.height);
+        // frame_resize(&imgRGB, &imgQuery);
+        if (!is_init) {
+            // resizeRGBBuffer(imgRGB.virt_addr[0], imgRGB.width, imgRGB.height,
+            //     imgMemory.virt_addr[0], imgMemory.width, imgMemory.height);
+            frame_resize(&imgRGB, &imgQuery);
+            setMemoryMask(&imgMask, crop, state);
+
+            is_init = TD_TRUE;
+        } else {
+            // resizeRGBBuffer(imgRGB.virt_addr[0], imgRGB.width, imgRGB.height,
+            //     imgQuery.virt_addr[0], imgQuery.width, imgQuery.height);
+            frame_resize(&imgRGB, &imgQuery);
+        }
+        
         long time_resize = getms();
         printf("resizing done, time: %ld ms\n", time_resize - time_color_conversion);
 
-        // set mask
-        setMemoryMask(&imgMask, crop, state);
+        
         long time_set_mask = getms();
         printf("mask setting done, time: %ld ms\n", time_set_mask - time_resize);
 
